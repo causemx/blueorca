@@ -1,0 +1,4 @@
+PyQt5==5.15.9
+PyQtChart==5.15.6
+pymavlink==2.4.41
+loguru==0.7.2
