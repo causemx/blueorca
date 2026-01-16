@@ -9,7 +9,7 @@ from dataclasses import dataclass, asdict
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QGridLayout, QLabel, QScrollArea, QFrame, QTableWidget,
-    QTableWidgetItem, QHeaderView, QSplitter
+    QTableWidgetItem, QHeaderView, QSplitter, QTreeWidget, QTreeWidgetItem
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QSize
 from PyQt5.QtGui import QColor, QFont, QBrush
@@ -35,6 +35,9 @@ class DroneStatus:
     lon: float = 0.0
     system_status: str = "UNKNOWN"
     last_update: str = ""
+    connection_changed: bool = False  # Flag to indicate connection status changed
+    connection_event: str = ""  # "CONNECTED" or "DISCONNECTED"
+    activate: bool = True  # True = heartbeat received, False = no heartbeat for 5 seconds
 
 
 class DroneStatusSignal(QObject):
@@ -48,6 +51,7 @@ class DroneMonitor:
     def __init__(self, connection_strings: Dict[int, str]):
         self.drones: Dict[int, DroneNode] = {}
         self.statuses: Dict[int, DroneStatus] = {}
+        self.previous_connected: Dict[int, bool] = {}  # Track previous connection state
         self.signal_emitter = DroneStatusSignal()
         self.monitoring = False
         self.monitor_thread = None
@@ -56,6 +60,7 @@ class DroneMonitor:
         for system_id, conn_str in connection_strings.items():
             self.drones[system_id] = DroneNode(conn_str)
             self.statuses[system_id] = DroneStatus(system_id=system_id)
+            self.previous_connected[system_id] = False  # Initially disconnected
     
     def start_monitoring(self):
         """Start monitoring all drone connections"""
@@ -98,6 +103,7 @@ class DroneMonitor:
         """Parse drone status dictionary into DroneStatus object"""
         status = DroneStatus(system_id=system_id)
         status.connected = status_dict.get('connected', False)
+        status.activate = status_dict.get('activate', True)  # Get activate status
         status.armed = status_dict.get('armed', False)
         status.mode = status_dict.get('mode', 'UNKNOWN')
         status.altitude = status_dict.get('altitude', 0.0)
@@ -105,6 +111,19 @@ class DroneMonitor:
         status.heading = status_dict.get('heading', 0.0)
         status.system_status = status_dict.get('system_status', 'UNKNOWN')
         status.last_update = datetime.now().strftime("%H:%M:%S")
+        
+        # Detect connection status change
+        previous_connected = self.previous_connected.get(system_id, False)
+        if status.connected and not previous_connected:
+            # Drone just connected
+            status.connection_changed = True
+            status.connection_event = "CONNECTED"
+            self.previous_connected[system_id] = True
+        elif not status.connected and previous_connected:
+            # Drone just disconnected
+            status.connection_changed = True
+            status.connection_event = "DISCONNECTED"
+            self.previous_connected[system_id] = False
         
         # Parse position
         position = status_dict.get('position', (0.0, 0.0))
@@ -173,13 +192,40 @@ class DroneCard(QFrame):
         id_label.setFont(id_font)
         layout.addWidget(id_label)
         
+        # Connection notification banner
+        if self.status.connection_changed:
+            notification_label = QLabel(f"[{self.status.connection_event}]")
+            notification_font = QFont("Consolas")
+            notification_font.setBold(True)
+            notification_font.setPointSize(8)
+            notification_label.setFont(notification_font)
+            
+            if self.status.connection_event == "CONNECTED":
+                # Green for connected
+                notification_label.setStyleSheet("color: green; font-weight: bold;")
+            elif self.status.connection_event == "DISCONNECTED":
+                # Red for disconnected
+                notification_label.setStyleSheet("color: red; font-weight: bold;")
+            
+            layout.addWidget(notification_label)
+        
         # Connection status
         status_text = "Connected" if self.status.connected else "Disconnected"
+        status_color = "green" if self.status.connected else "gray"
         status_label = QLabel(f"Status: {status_text}")
         status_font = QFont("Consolas")
         status_font.setPointSize(7)
         status_label.setFont(status_font)
+        status_label.setStyleSheet(f"color: {status_color};")
         layout.addWidget(status_label)
+        
+        # Activate status
+        activate_text = "Active" if self.status.activate else "Idle"
+        activate_color = "green" if self.status.activate else "orange"
+        activate_label = QLabel(f"Active: {activate_text}")
+        activate_label.setFont(status_font)
+        activate_label.setStyleSheet(f"color: {activate_color};")
+        layout.addWidget(activate_label)
         
         # Armed status
         armed_text = "Armed" if self.status.armed else "Disarmed"
@@ -244,18 +290,193 @@ class DroneCard(QFrame):
     def update_style(self):
         """Update card styling based on state"""
         if self.selected:
+            # Selected state - blue border
             self.setStyleSheet(
                 "DroneCard { border: 2px solid #0078d4; background-color: #e7f3ff; border-radius: 5px; }"
             )
         else:
-            self.setStyleSheet(
-                "DroneCard { border: 1px solid #ccc; background-color: #f5f5f5; border-radius: 5px; }"
-            )
+            # Unselected state - vary color based on connection
+            if self.status.connected:
+                # Connected - green border
+                self.setStyleSheet(
+                    "DroneCard { border: 2px solid #107c10; background-color: #f0f9f6; border-radius: 5px; }"
+                )
+            else:
+                # Disconnected - gray border
+                self.setStyleSheet(
+                    "DroneCard { border: 2px solid #c5c5c5; background-color: #f5f5f5; border-radius: 5px; }"
+                )
     
     def mousePressEvent(self, event):
         """Handle click event"""
         self.clicked.emit(self.status.system_id)
         super().mousePressEvent(event)
+
+
+class SwarmHealthChecker(QWidget):
+    """Widget to display swarm health status"""
+    
+    def __init__(self, monitor: DroneMonitor, parent=None):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.init_ui()
+        
+        # Connect status update signal
+        self.monitor.signal_emitter.status_updated.connect(self.update_health_status)
+    
+    def init_ui(self):
+        """Initialize UI"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        
+        # Title
+        title = QLabel("Swarm Health Checker")
+        title_font = QFont("Consolas")
+        title_font.setBold(True)
+        title_font.setPointSize(11)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        
+        # Health status area (scrollable)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(180)
+        
+        self.health_widget = QWidget()
+        self.health_layout = QVBoxLayout(self.health_widget)
+        self.health_layout.setSpacing(4)
+        self.health_layout.setContentsMargins(4, 4, 4, 4)
+        
+        scroll.setWidget(self.health_widget)
+        layout.addWidget(scroll)
+        
+        # Summary stats
+        self.summary_label = QLabel("Initializing...")
+        summary_font = QFont("Consolas")
+        summary_font.setPointSize(8)
+        self.summary_label.setFont(summary_font)
+        layout.addWidget(self.summary_label)
+        
+        self.setLayout(layout)
+    
+    def update_health_status(self, system_id: int, status: DroneStatus):
+        """Update health status display"""
+        # Clear current health items
+        while self.health_layout.count():
+            item = self.health_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Get all drones and their status
+        health_items = []
+        total_drones = 0
+        connected_drones = 0
+        active_drones = 0
+        
+        for drone_id in sorted(self.monitor.drones.keys()):
+            drone_status = self.monitor.get_status(drone_id)
+            total_drones += 1
+            
+            if drone_status.connected:
+                connected_drones += 1
+            
+            if drone_status.activate:
+                active_drones += 1
+            
+            # Create health item for this drone
+            health_line = self.create_health_item(drone_id, drone_status)
+            health_items.append(health_line)
+        
+        # Add all health items to layout
+        for item in health_items:
+            self.health_layout.addWidget(item)
+        
+        self.health_layout.addStretch()
+        
+        # Update summary
+        self.update_summary(total_drones, connected_drones, active_drones)
+    
+    def create_health_item(self, system_id: int, status: DroneStatus) -> QWidget:
+        """Create a health item widget for a drone"""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        # Drone ID
+        id_label = QLabel(f"Drone #{system_id}")
+        id_font = QFont("Consolas")
+        id_font.setBold(True)
+        id_font.setPointSize(8)
+        id_label.setFont(id_font)
+        id_label.setMinimumWidth(80)
+        layout.addWidget(id_label)
+        
+        # Status indicators
+        # Connected indicator
+        connected_status = "✓ Connected" if status.connected else "✗ Disconnected"
+        connected_color = "green" if status.connected else "red"
+        connected_label = QLabel(connected_status)
+        connected_label.setFont(QFont("Consolas", 8))
+        connected_label.setStyleSheet(f"color: {connected_color};")
+        connected_label.setMinimumWidth(120)
+        layout.addWidget(connected_label)
+        
+        # Activate/Alive indicator
+        activate_status = "✓ Active" if status.activate else "✗ Idle"
+        activate_color = "green" if status.activate else "orange"
+        activate_label = QLabel(activate_status)
+        activate_label.setFont(QFont("Consolas", 8))
+        activate_label.setStyleSheet(f"color: {activate_color};")
+        activate_label.setMinimumWidth(100)
+        layout.addWidget(activate_label)
+        
+        # Armed status
+        armed_status = "Armed" if status.armed else "Disarmed"
+        armed_label = QLabel(f"[{armed_status}]")
+        armed_label.setFont(QFont("Consolas", 8))
+        armed_label.setMinimumWidth(90)
+        layout.addWidget(armed_label)
+        
+        # Battery status
+        battery_color = "green" if status.battery_percentage > 50 else ("orange" if status.battery_percentage > 20 else "red")
+        battery_label = QLabel(f"Batt: {status.battery_percentage}%")
+        battery_label.setFont(QFont("Consolas", 8))
+        battery_label.setStyleSheet(f"color: {battery_color};")
+        battery_label.setMinimumWidth(80)
+        layout.addWidget(battery_label)
+        
+        # Last update time
+        time_label = QLabel(f"[{status.last_update}]")
+        time_label.setFont(QFont("Consolas", 7))
+        layout.addWidget(time_label)
+        
+        layout.addStretch()
+        
+        return widget
+    
+    def update_summary(self, total: int, connected: int, active: int):
+        """Update summary statistics"""
+        disconnected = total - connected
+        idle = connected - active
+        
+        summary_text = f"Total: {total} | Connected: {connected} | Disconnected: {disconnected} | Active: {active} | Idle: {idle}"
+        
+        # Color code the summary
+        self.summary_label.setText(summary_text)
+        
+        # Change color based on health
+        if connected == total and active == total:
+            color = "green"  # All healthy
+        elif disconnected > 0:
+            color = "red"  # Some disconnected
+        elif idle > 0:
+            color = "orange"  # Some idle but connected
+        else:
+            color = "black"
+        
+        self.summary_label.setStyleSheet(f"color: {color}; font-weight: bold;")
 
 
 class OverviewTab(QWidget):
@@ -268,6 +489,10 @@ class OverviewTab(QWidget):
         self.monitor = monitor
         self.drone_cards: Dict[int, DroneCard] = {}
         self.selected_drone = None
+        self.grid_layout = None
+        self.grid_widget = None
+        self.scroll_area = None
+        self.health_checker = None
         self.init_ui()
         
         # Connect status update signal
@@ -275,7 +500,9 @@ class OverviewTab(QWidget):
     
     def init_ui(self):
         """Initialize UI"""
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
         
         # Title
         title = QLabel("Drone Swarm Overview")
@@ -283,22 +510,23 @@ class OverviewTab(QWidget):
         title_font.setBold(True)
         title_font.setPointSize(12)
         title.setFont(title_font)
-        layout.addWidget(title)
+        main_layout.addWidget(title)
         
         # Info label
         info = QLabel("Click a drone card to view details")
         info_font = QFont("Consolas")
         info_font.setPointSize(9)
         info.setFont(info_font)
-        layout.addWidget(info)
+        main_layout.addWidget(info)
         
         # Scrollable area for drone cards
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setMinimumHeight(300)
         
-        grid_widget = QWidget()
-        grid_layout = QGridLayout(grid_widget)
-        grid_layout.setSpacing(12)
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_layout.setSpacing(12)
         
         # Create cards for each drone
         for system_id in sorted(self.monitor.drones.keys()):
@@ -310,20 +538,61 @@ class OverviewTab(QWidget):
             # Add to grid (3 columns)
             row = (system_id - 1) // 3
             col = (system_id - 1) % 3
-            grid_layout.addWidget(card, row, col)
+            self.grid_layout.addWidget(card, row, col)
         
         # Add stretch to fill remaining space
-        grid_layout.setRowStretch(grid_layout.rowCount(), 1)
-        grid_layout.setColumnStretch(3, 1)
-        scroll.setWidget(grid_widget)
-        layout.addWidget(scroll)
+        self.grid_layout.setRowStretch(self.grid_layout.rowCount(), 1)
+        self.grid_layout.setColumnStretch(3, 1)
+        self.scroll_area.setWidget(self.grid_widget)
+        main_layout.addWidget(self.scroll_area)
         
-        self.setLayout(layout)
+        # Swarm Health Checker
+        self.health_checker = SwarmHealthChecker(self.monitor)
+        main_layout.addWidget(self.health_checker)
+        
+        # Add stretch at the end
+        main_layout.addStretch()
+        
+        self.setLayout(main_layout)
     
     def on_status_updated(self, system_id: int, status: DroneStatus):
-        """Handle status update from monitor"""
-        if system_id in self.drone_cards:
+        """Handle status update from monitor - add/remove cards based on connection"""
+        # If drone connects and card doesn't exist, create it
+        if status.connected and system_id not in self.drone_cards:
+            self.add_drone_card(system_id, status)
+        
+        # If drone disconnects and card exists, remove it
+        elif not status.connected and system_id in self.drone_cards:
+            self.remove_drone_card(system_id)
+        
+        # Update card if it exists
+        elif system_id in self.drone_cards:
             self.drone_cards[system_id].update_status(status)
+    
+    def add_drone_card(self, system_id: int, status: DroneStatus):
+        """Add a drone card to the grid"""
+        card = DroneCard(status)
+        card.clicked.connect(self.on_drone_selected)
+        self.drone_cards[system_id] = card
+        
+        # Find position in grid (3 columns)
+        row = (system_id - 1) // 3
+        col = (system_id - 1) % 3
+        self.grid_layout.addWidget(card, row, col)
+    
+    def remove_drone_card(self, system_id: int):
+        """Remove a drone card from the grid"""
+        if system_id in self.drone_cards:
+            card = self.drone_cards[system_id]
+            
+            # If this card was selected, deselect it
+            if self.selected_drone == system_id:
+                self.selected_drone = None
+            
+            # Remove from layout and delete
+            self.grid_layout.removeWidget(card)
+            card.deleteLater()
+            del self.drone_cards[system_id]
     
     def on_drone_selected(self, system_id: int):
         """Handle drone selection"""
@@ -367,19 +636,15 @@ class DetailTab(QWidget):
         self.subtitle_label.setFont(subtitle_font)
         layout.addWidget(self.subtitle_label)
         
-        # Table for detailed telemetry
-        self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        # Tree widget for detailed telemetry
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Parameter", "Value"])
+        self.tree.setFont(QFont("Consolas", 9))
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 300)
         
-        # Set table font to Consolas
-        table_font = QFont("Consolas")
-        table_font.setPointSize(9)
-        self.table.setFont(table_font)
-        
-        layout.addWidget(self.table)
+        layout.addWidget(self.tree)
         
         self.setLayout(layout)
     
@@ -396,60 +661,63 @@ class DetailTab(QWidget):
         self.title_label.setText(f"Drone #{system_id} - Detailed Telemetry")
         self.subtitle_label.setText(f"Status: {'Connected' if status.connected else 'Disconnected'}")
         
-        # Clear and populate table
-        self.table.setRowCount(0)
+        # Clear tree
+        self.tree.clear()
         
-        details = [
-            ("System ID", str(status.system_id)),
-            ("Connected", "Yes" if status.connected else "No"),
-            ("Armed Status", "Armed" if status.armed else "Disarmed"),
-            ("Flight Mode", status.mode),
-            ("System Status", status.system_status),
-            ("", ""),
-            ("Battery", ""),
-            ("  Percentage", f"{status.battery_percentage}%"),
-            ("  Voltage", f"{status.battery_voltage} mV"),
-            ("", ""),
-            ("GPS", ""),
-            ("  Fix Type", self._get_gps_fix_name(status.gps_fix)),
-            ("  Satellites", str(status.gps_satellites)),
-            ("  Latitude", f"{status.lat:.6f}"),
-            ("  Longitude", f"{status.lon:.6f}"),
-            ("", ""),
-            ("Position & Motion", ""),
-            ("  Altitude", f"{status.altitude:.2f} m"),
-            ("  Ground Speed", f"{status.groundspeed:.2f} m/s"),
-            ("  Heading", f"{status.heading:.1f}"),
-            ("", ""),
-            ("Last Update", status.last_update),
-        ]
+        # System Information Category
+        system_item = QTreeWidgetItem(self.tree, ["System", ""])
+        system_font = QFont("Consolas", 10, QFont.Bold)
+        system_item.setFont(0, system_font)
+        system_item.setFont(1, system_font)
         
-        for param, value in details:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            
-            param_item = QTableWidgetItem(param)
-            value_item = QTableWidgetItem(value)
-            
-            item_font = QFont("Consolas")
-            item_font.setPointSize(8)
-            param_item.setFont(item_font)
-            value_item.setFont(item_font)
-            
-            if param == "":
-                # Section divider
-                param_item.setBackground(QBrush(QColor("#e0e0e0")))
-                value_item.setBackground(QBrush(QColor("#e0e0e0")))
-            elif param.startswith("  "):
-                # Indented items - same font
-                pass
-            else:
-                # Headers - bold
-                item_font.setBold(True)
-                param_item.setFont(item_font)
-            
-            self.table.setItem(row, 0, param_item)
-            self.table.setItem(row, 1, value_item)
+        QTreeWidgetItem(system_item, ["System ID", str(status.system_id)])
+        QTreeWidgetItem(system_item, ["Connected", "Yes" if status.connected else "No"])
+        QTreeWidgetItem(system_item, ["Activate", "Yes" if status.activate else "No (No heartbeat)"])
+        QTreeWidgetItem(system_item, ["Armed Status", "Armed" if status.armed else "Disarmed"])
+        QTreeWidgetItem(system_item, ["Flight Mode", status.mode])
+        QTreeWidgetItem(system_item, ["System Status", status.system_status])
+        
+        # Battery Category
+        battery_item = QTreeWidgetItem(self.tree, ["Battery", ""])
+        battery_font = QFont("Consolas", 10, QFont.Bold)
+        battery_item.setFont(0, battery_font)
+        battery_item.setFont(1, battery_font)
+        
+        QTreeWidgetItem(battery_item, ["Percentage", f"{status.battery_percentage}%"])
+        QTreeWidgetItem(battery_item, ["Voltage", f"{status.battery_voltage} mV"])
+        
+        # GPS Category
+        gps_item = QTreeWidgetItem(self.tree, ["GPS", ""])
+        gps_font = QFont("Consolas", 10, QFont.Bold)
+        gps_item.setFont(0, gps_font)
+        gps_item.setFont(1, gps_font)
+        
+        QTreeWidgetItem(gps_item, ["Fix Type", self._get_gps_fix_name(status.gps_fix)])
+        QTreeWidgetItem(gps_item, ["Satellites", str(status.gps_satellites)])
+        QTreeWidgetItem(gps_item, ["Latitude", f"{status.lat:.6f}"])
+        QTreeWidgetItem(gps_item, ["Longitude", f"{status.lon:.6f}"])
+        
+        # Position & Motion Category
+        motion_item = QTreeWidgetItem(self.tree, ["Position & Motion", ""])
+        motion_font = QFont("Consolas", 10, QFont.Bold)
+        motion_item.setFont(0, motion_font)
+        motion_item.setFont(1, motion_font)
+        
+        QTreeWidgetItem(motion_item, ["Altitude", f"{status.altitude:.2f} m"])
+        QTreeWidgetItem(motion_item, ["Ground Speed", f"{status.groundspeed:.2f} m/s"])
+        QTreeWidgetItem(motion_item, ["Heading", f"{status.heading:.1f}°"])
+        
+        # Update Time Category
+        time_item = QTreeWidgetItem(self.tree, ["Update Time", ""])
+        time_font = QFont("Consolas", 10, QFont.Bold)
+        time_item.setFont(0, time_font)
+        time_item.setFont(1, time_font)
+        
+        QTreeWidgetItem(time_item, ["Last Update", status.last_update])
+        
+        # Expand all categories
+        self.tree.expandAll()
+    
     
     def on_status_updated(self, system_id: int, status: DroneStatus):
         """Handle status update from monitor"""
@@ -533,6 +801,10 @@ def main():
         4: "udp:172.21.128.1:14580",
         5: "udp:172.21.128.1:14590",
         6: "udp:172.21.128.1:14600",
+        7: "udp:172.21.128.1:14610",
+        8: "udp:172.21.128.1:14620",
+        9: "udp:172.21.128.1:14630",
+        10: "udp:172.21.128.1:14640",
     }
     
     # Create monitor

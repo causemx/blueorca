@@ -77,6 +77,11 @@ class DroneNode:
         self.flight_mode = None  # Will store FlightMode enum
         self.altitude = 0
 
+        # Heartbeat timeout tracking
+        self.activate = False  # True = heartbeat received, False = no heartbeat for 5 seconds
+        self.last_heartbeat_time = datetime.now()
+        self.heartbeat_timeout = 5  # Seconds before marking as inactive
+
         # Status tracking variables
         self.current_status = {
             'armed': False,
@@ -110,6 +115,12 @@ class DroneNode:
         """Background thread function to track drone status"""
         while self.tracking and self.drone:
             try:
+                # Check for heartbeat timeout (no heartbeat for 5 seconds)
+                current_time = datetime.now()
+                time_since_heartbeat = (current_time - self.last_heartbeat_time).total_seconds()
+                if time_since_heartbeat > self.heartbeat_timeout:
+                    self.activate = False
+                
                 # Receive messages
                 msg = self.drone.recv_match(blocking=True, timeout=1.0)
                 if msg:
@@ -118,6 +129,10 @@ class DroneNode:
 
                     # Process different message types
                     if msg_type == 'HEARTBEAT':
+                        # Update heartbeat timestamp and activate status
+                        self.last_heartbeat_time = datetime.now()
+                        self.activate = True
+                        
                         self.current_status['armed'] = bool(msg.base_mode & dialect.MAV_MODE_FLAG_SAFETY_ARMED)
                         self.current_status['system_status'] = dialect.enums['MAV_STATE'][msg.system_status].name
 
@@ -841,9 +856,17 @@ class DroneNode:
             self.drone.close()
             logger.info("Drone connection closed")
 
-"""
+""""
+Test
+
 if __name__ == "__main__":
     drone = DroneNode("udp:172.21.128.1:14550")
     drone.connect()
     drone.set_flight_mode(FlightMode.GUIDED)
-"""
+
+    try:
+        while True:
+            print(drone.activate)
+    except KeyboardInterrupt:
+        exit(-1)
+        """
