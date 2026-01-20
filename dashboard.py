@@ -38,6 +38,9 @@ class DroneStatus:
     connection_changed: bool = False  # Flag to indicate connection status changed
     connection_event: str = ""  # "CONNECTED" or "DISCONNECTED"
     activate: bool = True  # True = heartbeat received, False = no heartbeat for 5 seconds
+    
+    # Drone Parameters (Configuration)
+    params: Dict[str, any] = None  # Will hold all drone parameters
 
 
 class DroneStatusSignal(QObject):
@@ -56,6 +59,15 @@ class DroneMonitor:
         self.monitoring = False
         self.monitor_thread = None
         
+        # Update rate configuration (in seconds)
+        self.update_interval = 0.5  # Default: 0.5 seconds (2 Hz)
+        # Common values:
+        # 0.2 (5 Hz) - Very fast, high CPU usage
+        # 0.33 (3 Hz) - Fast updates
+        # 0.5 (2 Hz) - Balanced (default)
+        # 1.0 (1 Hz) - Slow, lower CPU usage
+        # 2.0 (0.5 Hz) - Very slow
+        
         # Initialize drones
         for system_id, conn_str in connection_strings.items():
             self.drones[system_id] = DroneNode(conn_str)
@@ -68,6 +80,35 @@ class DroneMonitor:
             self.monitoring = True
             self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.monitor_thread.start()
+    
+    def set_update_interval(self, interval: float):
+        """
+        Set the monitoring update interval (in seconds)
+        
+        Args:
+            interval (float): Time in seconds between updates
+            
+        Common values:
+            0.2 (5 Hz) - Very fast, high CPU usage
+            0.33 (3 Hz) - Fast updates
+            0.5 (2 Hz) - Balanced (default)
+            1.0 (1 Hz) - Slow, lower CPU usage
+            2.0 (0.5 Hz) - Very slow
+            
+        Example:
+            monitor.set_update_interval(1.0)  # Update once per second
+        """
+        if interval < 0.1:
+            print("Warning: Update interval < 0.1s may cause high CPU usage")
+        if interval > 10:
+            print("Warning: Update interval > 10s may miss time-sensitive updates")
+        
+        self.update_interval = interval
+        print(f"Update interval set to {interval}s ({1/interval:.2f} Hz)")
+    
+    def get_update_interval(self) -> float:
+        """Get the current monitoring update interval in seconds"""
+        return self.update_interval
     
     def stop_monitoring(self):
         """Stop monitoring and disconnect all drones"""
@@ -97,7 +138,7 @@ class DroneMonitor:
                 except Exception as e:
                     print(f"Error monitoring drone {system_id}: {e}")
             
-            time.sleep(0.5)
+            time.sleep(self.update_interval)  # Use configurable interval
     
     def _parse_drone_status(self, system_id: int, status_dict: dict) -> DroneStatus:
         """Parse drone status dictionary into DroneStatus object"""
@@ -141,6 +182,9 @@ class DroneMonitor:
         if gps:
             status.gps_fix = gps.get('fix_type', 0)
             status.gps_satellites = gps.get('satellites_visible', 0)
+        
+        # Parse drone parameters (configuration)
+        status.params = status_dict.get('params', {})
         
         return status
     
@@ -715,6 +759,171 @@ class DetailTab(QWidget):
         
         QTreeWidgetItem(time_item, ["Last Update", status.last_update])
         
+        # ========== DRONE PARAMETERS (CONFIGURATION) ==========
+        
+        # Battery & Power Category
+        batt_power_item = QTreeWidgetItem(self.tree, ["🔴 Battery & Power (CRITICAL)", ""])
+        batt_power_font = QFont("Consolas", 10, QFont.Bold)
+        batt_power_item.setFont(0, batt_power_font)
+        batt_power_item.setFont(1, batt_power_font)
+        batt_power_item.setForeground(0, QBrush(QColor("darkred")))
+        
+        params = status.params or {}
+        QTreeWidgetItem(batt_power_item, ["BATT_MONITOR", str(params.get("BATT_MONITOR", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_VOLT_PIN", str(params.get("BATT_VOLT_PIN", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_CURR_PIN", str(params.get("BATT_CURR_PIN", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_VOLT_MULT", str(params.get("BATT_VOLT_MULT", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_AMP_PERVLT", str(params.get("BATT_AMP_PERVLT", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_CAPACITY", str(params.get("BATT_CAPACITY", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_LOW_VOLT", str(params.get("BATT_LOW_VOLT", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_CRT_VOLT", str(params.get("BATT_CRT_VOLT", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_FS_VOLTSRC", str(params.get("BATT_FS_VOLTSRC", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_FS_LOW_ACT", str(params.get("BATT_FS_LOW_ACT", "N/A"))])
+        QTreeWidgetItem(batt_power_item, ["BATT_FS_CRT_ACT", str(params.get("BATT_FS_CRT_ACT", "N/A"))])
+        
+        # Position, GPS & Navigation Category
+        gps_nav_item = QTreeWidgetItem(self.tree, ["Position, GPS & Navigation", ""])
+        gps_nav_font = QFont("Consolas", 10, QFont.Bold)
+        gps_nav_item.setFont(0, gps_nav_font)
+        gps_nav_item.setFont(1, gps_nav_font)
+        
+        QTreeWidgetItem(gps_nav_item, ["GPS_TYPE", str(params.get("GPS_TYPE", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["GPS_AUTO_SWITCH", str(params.get("GPS_AUTO_SWITCH", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["GPS_MIN_ELEV", str(params.get("GPS_MIN_ELEV", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["GPS_HDOP_GOOD", str(params.get("GPS_HDOP_GOOD", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["EK3_SRC1_POSXY", str(params.get("EK3_SRC1_POSXY", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["EK3_SRC1_POSZ", str(params.get("EK3_SRC1_POSZ", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["EK3_SRC1_VELXY", str(params.get("EK3_SRC1_VELXY", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["EK3_ENABLE", str(params.get("EK3_ENABLE", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["FS_EKF_ACTION", str(params.get("FS_EKF_ACTION", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["WPNAV_SPEED", str(params.get("WPNAV_SPEED", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["WPNAV_SPEED_UP", str(params.get("WPNAV_SPEED_UP", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["WPNAV_SPEED_DN", str(params.get("WPNAV_SPEED_DN", "N/A"))])
+        QTreeWidgetItem(gps_nav_item, ["RTL_ALT", str(params.get("RTL_ALT", "N/A"))])
+        
+        # Failsafes Category
+        failsafe_item = QTreeWidgetItem(self.tree, ["🔴 Failsafes (REQUIRED)", ""])
+        failsafe_font = QFont("Consolas", 10, QFont.Bold)
+        failsafe_item.setFont(0, failsafe_font)
+        failsafe_item.setFont(1, failsafe_font)
+        failsafe_item.setForeground(0, QBrush(QColor("darkred")))
+        
+        # Radio Failsafe
+        radio_fs = QTreeWidgetItem(failsafe_item, ["Radio Failsafe", ""])
+        QTreeWidgetItem(radio_fs, ["FS_THR_ENABLE", str(params.get("FS_THR_ENABLE", "N/A"))])
+        QTreeWidgetItem(radio_fs, ["FS_THR_VALUE", str(params.get("FS_THR_VALUE", "N/A"))])
+        QTreeWidgetItem(radio_fs, ["FS_THR_ACTION", str(params.get("FS_THR_ACTION", "N/A"))])
+        
+        # GPS Failsafe
+        gps_fs = QTreeWidgetItem(failsafe_item, ["GPS Failsafe", ""])
+        QTreeWidgetItem(gps_fs, ["FS_GPS_ENABLE", str(params.get("FS_GPS_ENABLE", "N/A"))])
+        
+        # GCS Failsafe
+        gcs_fs = QTreeWidgetItem(failsafe_item, ["GCS Failsafe", ""])
+        QTreeWidgetItem(gcs_fs, ["FS_GCS_ENABLE", str(params.get("FS_GCS_ENABLE", "N/A"))])
+        
+        # Flight Modes & RC Input Category
+        flight_modes_item = QTreeWidgetItem(self.tree, ["Flight Modes & RC Input", ""])
+        flight_modes_font = QFont("Consolas", 10, QFont.Bold)
+        flight_modes_item.setFont(0, flight_modes_font)
+        flight_modes_item.setFont(1, flight_modes_font)
+        
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE1", str(params.get("FLTMODE1", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE2", str(params.get("FLTMODE2", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE3", str(params.get("FLTMODE3", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE4", str(params.get("FLTMODE4", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE5", str(params.get("FLTMODE5", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["FLTMODE6", str(params.get("FLTMODE6", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["RCMAP_ROLL", str(params.get("RCMAP_ROLL", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["RCMAP_PITCH", str(params.get("RCMAP_PITCH", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["RCMAP_YAW", str(params.get("RCMAP_YAW", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["RCMAP_THROTTLE", str(params.get("RCMAP_THROTTLE", "N/A"))])
+        QTreeWidgetItem(flight_modes_item, ["RC_OPTIONS", str(params.get("RC_OPTIONS", "N/A"))])
+        
+        # Arming & Safety Category
+        arming_item = QTreeWidgetItem(self.tree, ["Arming & Safety", ""])
+        arming_font = QFont("Consolas", 10, QFont.Bold)
+        arming_item.setFont(0, arming_font)
+        arming_item.setFont(1, arming_font)
+        
+        QTreeWidgetItem(arming_item, ["ARMING_CHECK", str(params.get("ARMING_CHECK", "N/A"))])
+        QTreeWidgetItem(arming_item, ["DISARM_DELAY", str(params.get("DISARM_DELAY", "N/A"))])
+        QTreeWidgetItem(arming_item, ["MOT_SAFE_DISARM", str(params.get("MOT_SAFE_DISARM", "N/A"))])
+        QTreeWidgetItem(arming_item, ["BRD_SAFETYENABLE", str(params.get("BRD_SAFETYENABLE", "N/A"))])
+        QTreeWidgetItem(arming_item, ["LOG_DISARMED", str(params.get("LOG_DISARMED", "N/A"))])
+        
+        # Attitude & Stabilization Category
+        attitude_item = QTreeWidgetItem(self.tree, ["Attitude & Stabilization", ""])
+        attitude_font = QFont("Consolas", 10, QFont.Bold)
+        attitude_item.setFont(0, attitude_font)
+        attitude_item.setFont(1, attitude_font)
+        
+        QTreeWidgetItem(attitude_item, ["ATC_ANG_RLL_P", str(params.get("ATC_ANG_RLL_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_ANG_PIT_P", str(params.get("ATC_ANG_PIT_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_ANG_YAW_P", str(params.get("ATC_ANG_YAW_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_RLL_P", str(params.get("ATC_RAT_RLL_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_RLL_I", str(params.get("ATC_RAT_RLL_I", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_RLL_D", str(params.get("ATC_RAT_RLL_D", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_PIT_P", str(params.get("ATC_RAT_PIT_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_PIT_I", str(params.get("ATC_RAT_PIT_I", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_PIT_D", str(params.get("ATC_RAT_PIT_D", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_YAW_P", str(params.get("ATC_RAT_YAW_P", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_RAT_YAW_I", str(params.get("ATC_RAT_YAW_I", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_ACCEL_R_MAX", str(params.get("ATC_ACCEL_R_MAX", "N/A"))])
+        QTreeWidgetItem(attitude_item, ["ATC_ACCEL_P_MAX", str(params.get("ATC_ACCEL_P_MAX", "N/A"))])
+        
+        # Motors & ESCs Category
+        motors_item = QTreeWidgetItem(self.tree, ["Motors & ESCs", ""])
+        motors_font = QFont("Consolas", 10, QFont.Bold)
+        motors_item.setFont(0, motors_font)
+        motors_item.setFont(1, motors_font)
+        
+        QTreeWidgetItem(motors_item, ["FRAME_CLASS", str(params.get("FRAME_CLASS", "N/A"))])
+        QTreeWidgetItem(motors_item, ["FRAME_TYPE", str(params.get("FRAME_TYPE", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_PWM_TYPE", str(params.get("MOT_PWM_TYPE", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_PWM_MIN", str(params.get("MOT_PWM_MIN", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_PWM_MAX", str(params.get("MOT_PWM_MAX", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_SPIN_ARM", str(params.get("MOT_SPIN_ARM", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_SPIN_MIN", str(params.get("MOT_SPIN_MIN", "N/A"))])
+        QTreeWidgetItem(motors_item, ["MOT_THST_HOVER", str(params.get("MOT_THST_HOVER", "N/A"))])
+        
+        # Sensors & Calibration Category
+        sensors_item = QTreeWidgetItem(self.tree, ["Sensors & Calibration", ""])
+        sensors_font = QFont("Consolas", 10, QFont.Bold)
+        sensors_item.setFont(0, sensors_font)
+        sensors_item.setFont(1, sensors_font)
+        
+        QTreeWidgetItem(sensors_item, ["COMPASS_ENABLE", str(params.get("COMPASS_ENABLE", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["COMPASS_USE", str(params.get("COMPASS_USE", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["COMPASS_OFS_X", str(params.get("COMPASS_OFS_X", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["COMPASS_OFS_Y", str(params.get("COMPASS_OFS_Y", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["COMPASS_OFS_Z", str(params.get("COMPASS_OFS_Z", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["INS_GYRO_FILTER", str(params.get("INS_GYRO_FILTER", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["INS_ACCEL_FILTER", str(params.get("INS_ACCEL_FILTER", "N/A"))])
+        QTreeWidgetItem(sensors_item, ["AHRS_EKF_TYPE", str(params.get("AHRS_EKF_TYPE", "N/A"))])
+        
+        # Logging & Debugging Category
+        logging_item = QTreeWidgetItem(self.tree, ["Logging & Debugging", ""])
+        logging_font = QFont("Consolas", 10, QFont.Bold)
+        logging_item.setFont(0, logging_font)
+        logging_item.setFont(1, logging_font)
+        
+        QTreeWidgetItem(logging_item, ["LOG_BACKEND_TYPE", str(params.get("LOG_BACKEND_TYPE", "N/A"))])
+        QTreeWidgetItem(logging_item, ["LOG_BITMASK", str(params.get("LOG_BITMASK", "N/A"))])
+        QTreeWidgetItem(logging_item, ["LOG_DISARMED", str(params.get("LOG_DISARMED", "N/A"))])
+        QTreeWidgetItem(logging_item, ["LOG_REPLAY", str(params.get("LOG_REPLAY", "N/A"))])
+        
+        # Optional Features Category
+        optional_item = QTreeWidgetItem(self.tree, ["Optional Features", ""])
+        optional_font = QFont("Consolas", 10, QFont.Bold)
+        optional_item.setFont(0, optional_font)
+        optional_item.setFont(1, optional_font)
+        
+        QTreeWidgetItem(optional_item, ["AVOID_ENABLE", str(params.get("AVOID_ENABLE", "N/A"))])
+        QTreeWidgetItem(optional_item, ["LAND_SPEED", str(params.get("LAND_SPEED", "N/A"))])
+        QTreeWidgetItem(optional_item, ["PILOT_THR_FILT", str(params.get("PILOT_THR_FILT", "N/A"))])
+        QTreeWidgetItem(optional_item, ["SCHED_LOOP_RATE", str(params.get("SCHED_LOOP_RATE", "N/A"))])
+        
         # Expand all categories
         self.tree.expandAll()
     
@@ -800,11 +1009,6 @@ def main():
         3: "udp:172.21.128.1:14570",
         4: "udp:172.21.128.1:14580",
         5: "udp:172.21.128.1:14590",
-        6: "udp:172.21.128.1:14600",
-        7: "udp:172.21.128.1:14610",
-        8: "udp:172.21.128.1:14620",
-        9: "udp:172.21.128.1:14630",
-        10: "udp:172.21.128.1:14640",
     }
     
     # Create monitor
