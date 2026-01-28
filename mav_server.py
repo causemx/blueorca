@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PyQt5 Dashboard for MAVLink Server with PyMAVLink Packet Parsing
-Fixed grid layout - one drone card = one grid block
+Fixed: Uses sysid as unique identifier to prevent duplicate drone cards
 """
 
 import sys
@@ -25,9 +25,9 @@ from PyQt5.QtGui import QFont
 @dataclass
 class DroneStatus:
     """Data class to hold drone status information"""
-    addr: tuple  # (ip, port)
     sysid: int
-    compid: int
+    addr: tuple = None  # (ip, port) - can change, so not primary key
+    compid: int = 0
     connected: bool = True
     message_count: int = 0
     first_message_time: float = 0.0
@@ -60,10 +60,10 @@ class DroneStatus:
 
 class DroneStatusSignal(QObject):
     """Signal emitter for drone status updates"""
-    drone_connected = pyqtSignal(tuple, int, int)  # addr, sysid, compid
-    drone_disconnected = pyqtSignal(tuple, int)    # addr, sysid
-    drone_message_received = pyqtSignal(tuple, DroneStatus)  # addr, status
-    status_updated = pyqtSignal(tuple, DroneStatus)
+    drone_connected = pyqtSignal(int, int, int)  # sysid, compid, port
+    drone_disconnected = pyqtSignal(int)         # sysid
+    drone_message_received = pyqtSignal(int, DroneStatus)  # sysid, status
+    status_updated = pyqtSignal(int, DroneStatus)
 
 
 class MAVLinkServerThread(threading.Thread):
@@ -76,7 +76,7 @@ class MAVLinkServerThread(threading.Thread):
         self.timeout = timeout
         self.socket = None
         self.running = False
-        self.drones = {}  # {(ip, port): DroneStatus}
+        self.drones = {}  # {sysid: DroneStatus} - keyed by system ID
         self.parsers = {}  # {(ip, port): MAVLink parser}
         self.signal_emitter = DroneStatusSignal()
         
@@ -112,7 +112,7 @@ class MAVLinkServerThread(threading.Thread):
     def _handle_packet(self, data, addr):
         """Handle incoming MAVLink packet using pymavlink"""
         try:
-            # Initialize parser for this drone if needed
+            # Initialize parser for this address if needed
             if addr not in self.parsers:
                 self.parsers[addr] = mavlink.MAVLink(None, False)
             
@@ -128,22 +128,22 @@ class MAVLinkServerThread(threading.Thread):
                     compid = msg.get_srcComponent()
                     msg_type = msg.get_type()
                     
-                    # Check if this is a new drone
-                    if addr not in self.drones:
-                        self._drone_connected(addr, sysid, compid, msg_type)
+                    # Check if this is a new drone (by sysid, not addr)
+                    if sysid not in self.drones:
+                        self._drone_connected(sysid, compid, addr, msg_type)
                     else:
-                        # Update drone status with new message
-                        self._update_drone_status(addr, msg, msg_type)
+                        # Update existing drone
+                        self._update_drone_status(sysid, addr, msg, msg_type)
                     
         except Exception as e:
             # Silently ignore parsing errors
             pass
     
-    def _drone_connected(self, addr, sysid, compid, first_msg_type):
+    def _drone_connected(self, sysid, compid, addr, first_msg_type):
         """Handle new drone connection"""
         status = DroneStatus(
-            addr=addr,
             sysid=sysid,
+            addr=addr,
             compid=compid,
             connected=True,
             first_message_time=time.time(),
@@ -153,14 +153,15 @@ class MAVLinkServerThread(threading.Thread):
             last_message_type=first_msg_type
         )
         
-        self.drones[addr] = status
-        self.signal_emitter.drone_connected.emit(addr, sysid, compid)
-        self.signal_emitter.drone_message_received.emit(addr, status)
+        self.drones[sysid] = status
+        self.signal_emitter.drone_connected.emit(sysid, compid, addr[1])
+        self.signal_emitter.drone_message_received.emit(sysid, status)
         print(f"✓ DRONE CONNECTED: {addr[0]}:{addr[1]} (SysID: {sysid}, First Msg: {first_msg_type})")
     
-    def _update_drone_status(self, addr, msg, msg_type):
+    def _update_drone_status(self, sysid, addr, msg, msg_type):
         """Update drone status from MAVLink message"""
-        status = self.drones[addr]
+        status = self.drones[sysid]
+        status.addr = addr  # Update address in case it changed (new port)
         status.message_count += 1
         status.last_heartbeat = time.time()
         status.last_update = datetime.now().strftime("%H:%M:%S")
@@ -190,7 +191,7 @@ class MAVLinkServerThread(threading.Thread):
         except Exception as e:
             pass
         
-        self.signal_emitter.drone_message_received.emit(addr, status)
+        self.signal_emitter.drone_message_received.emit(sysid, status)
     
     def _parse_heartbeat(self, status, msg):
         """Parse HEARTBEAT message"""
@@ -208,7 +209,7 @@ class MAVLinkServerThread(threading.Thread):
             status.battery_percent = msg.battery_remaining
             status.battery_voltage = msg.voltage_battery / 1000.0
             status.battery_current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
-        except Exception:
+        except:
             pass
     
     def _parse_battery_status(self, status, msg):
@@ -218,7 +219,7 @@ class MAVLinkServerThread(threading.Thread):
                 status.battery_voltage = msg.voltages[0] / 1000.0
             status.battery_current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
             status.battery_percent = msg.battery_remaining
-        except Exception:
+        except:
             pass
     
     def _parse_attitude(self, status, msg):
@@ -227,7 +228,7 @@ class MAVLinkServerThread(threading.Thread):
             status.roll = msg.roll
             status.pitch = msg.pitch
             status.yaw = msg.yaw
-        except Exception:
+        except:
             pass
     
     def _parse_gps(self, status, msg):
@@ -238,7 +239,7 @@ class MAVLinkServerThread(threading.Thread):
             status.altitude = msg.alt / 1e3
             status.gps_fix = msg.fix_type
             status.gps_satellites = msg.satellites_visible
-        except Exception:
+        except:
             pass
     
     def _parse_global_position(self, status, msg):
@@ -249,7 +250,7 @@ class MAVLinkServerThread(threading.Thread):
             status.altitude = msg.alt / 1e3
             status.groundspeed = (msg.vx**2 + msg.vy**2)**0.5 / 100.0
             status.heading = msg.hdg / 100.0
-        except Exception:
+        except:
             pass
     
     def _parse_vfr_hud(self, status, msg):
@@ -258,7 +259,7 @@ class MAVLinkServerThread(threading.Thread):
             status.groundspeed = msg.groundspeed
             status.altitude = msg.alt
             status.heading = msg.heading
-        except Exception:
+        except:
             pass
     
     @staticmethod
@@ -275,21 +276,22 @@ class MAVLinkServerThread(threading.Thread):
         current_time = time.time()
         disconnected = []
         
-        for addr, status in list(self.drones.items()):
+        for sysid, status in list(self.drones.items()):
             if current_time - status.last_heartbeat > self.timeout:
-                disconnected.append(addr)
+                disconnected.append(sysid)
         
-        for addr in disconnected:
-            status = self.drones.pop(addr)
+        for sysid in disconnected:
+            status = self.drones.pop(sysid)
             status.connected = False
             status.connection_event = "DISCONNECTED"
             status.last_update = datetime.now().strftime("%H:%M:%S")
             
-            if addr in self.parsers:
-                del self.parsers[addr]
+            # Clean up parsers for this drone's address
+            if status.addr in self.parsers:
+                del self.parsers[status.addr]
             
-            self.signal_emitter.drone_disconnected.emit(addr, status.sysid)
-            print(f"✗ DRONE DISCONNECTED: {addr[0]}:{addr[1]} (SysID: {status.sysid}, Messages: {status.message_count})")
+            self.signal_emitter.drone_disconnected.emit(sysid)
+            print(f"✗ DRONE DISCONNECTED: SysID {sysid} ({status.addr[0]}:{status.addr[1]}), Messages: {status.message_count}")
     
     def stop(self):
         """Stop the server"""
@@ -301,11 +303,11 @@ class MAVLinkServerThread(threading.Thread):
 class DroneCard(QFrame):
     """Widget displaying drone status as a card"""
     
-    clicked = pyqtSignal(tuple)
+    clicked = pyqtSignal(int)  # sysid
     
-    def __init__(self, addr: tuple, status: DroneStatus, parent=None):
+    def __init__(self, sysid: int, status: DroneStatus, parent=None):
         super().__init__(parent)
-        self.addr = addr
+        self.sysid = sysid
         self.status = status
         self.selected = False
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
@@ -321,8 +323,8 @@ class DroneCard(QFrame):
         layout.setSpacing(6)
         
         # Drone ID
-        drone_label = QLabel(f"SYSID: {self.status.sysid}")
-        drone_font = QFont("Consolas", 11, QFont.Bold)
+        drone_label = QLabel(f"sysid #{self.status.sysid}")
+        drone_font = QFont("Consolas", 9, QFont.Bold)
         drone_label.setFont(drone_font)
         drone_label.setStyleSheet("color: #888888; background: transparent; border: none;")
         layout.addWidget(drone_label)
@@ -335,12 +337,13 @@ class DroneCard(QFrame):
         layout.addWidget(self.status_label)
         
         # Address
-        addr_label = QLabel(f"{self.addr[0]}:{self.addr[1]}")
+        addr_text = f"{self.status.addr[0]}:{self.status.addr[1]}" if self.status.addr else "N/A"
+        self.addr_label = QLabel(addr_text)
         addr_font = QFont("Consolas", 8)
         addr_font.setItalic(True)
-        addr_label.setFont(addr_font)
-        addr_label.setStyleSheet("color: #888888; background: transparent; border: none;")
-        layout.addWidget(addr_label)
+        self.addr_label.setFont(addr_font)
+        self.addr_label.setStyleSheet("color: #888888; background: transparent; border: none;")
+        layout.addWidget(self.addr_label)
         
         # Messages
         self.messages_label = QLabel("Messages: 0")
@@ -358,7 +361,7 @@ class DroneCard(QFrame):
         
         layout.addStretch()
         self.setLayout(layout)
-        self.setMaximumHeight(150)
+        self.setMaximumHeight(140)
         self.setMinimumWidth(200)
     
     def update_status(self, status: DroneStatus):
@@ -371,6 +374,11 @@ class DroneCard(QFrame):
         else:
             self.status_label.setText("● Disconnected")
             self.status_label.setStyleSheet("color: #FF6666; background: transparent; border: none;")
+        
+        # Update address if it changed (drone reconnected on different port)
+        if status.addr:
+            addr_text = f"{status.addr[0]}:{status.addr[1]}"
+            self.addr_label.setText(addr_text)
         
         self.messages_label.setText(f"Messages: {status.message_count}")
         
@@ -396,17 +404,17 @@ class DroneCard(QFrame):
     
     def mousePressEvent(self, event):
         """Handle mouse click"""
-        self.clicked.emit(self.addr)
+        self.clicked.emit(self.sysid)
 
 
 class OverviewTab(QWidget):
     """Overview tab showing all connected drones"""
     
-    drone_selected = pyqtSignal(tuple)
+    drone_selected = pyqtSignal(int)  # sysid
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.drone_cards = {}
+        self.drone_cards = {}  # {sysid: DroneCard} - keyed by sysid
         self.init_ui()
     
     def init_ui(self):
@@ -438,11 +446,11 @@ class OverviewTab(QWidget):
         
         self.setLayout(layout)
     
-    def add_drone(self, addr: tuple, status: DroneStatus):
+    def add_drone(self, sysid: int, status: DroneStatus):
         """Add a new drone card"""
-        card = DroneCard(addr, status)
+        card = DroneCard(sysid, status)
         card.clicked.connect(self.on_drone_card_clicked)
-        self.drone_cards[addr] = card
+        self.drone_cards[sysid] = card
         
         # Calculate grid position (2 columns)
         row = len(self.drone_cards) - 1
@@ -451,18 +459,25 @@ class OverviewTab(QWidget):
         
         self.grid_layout.addWidget(card, grid_row, grid_col)
     
-    def update_drone_status(self, addr: tuple, status: DroneStatus):
-        """Update drone card status"""
-        if addr in self.drone_cards:
-            self.drone_cards[addr].update_status(status)
+    def remove_drone(self, sysid: int):
+        """Remove a drone card from the overview"""
+        if sysid in self.drone_cards:
+            card = self.drone_cards.pop(sysid)
+            card.setParent(None)
+            card.deleteLater()
     
-    def on_drone_card_clicked(self, addr: tuple):
+    def update_drone_status(self, sysid: int, status: DroneStatus):
+        """Update drone card status"""
+        if sysid in self.drone_cards:
+            self.drone_cards[sysid].update_status(status)
+    
+    def on_drone_card_clicked(self, sysid: int):
         """Handle drone card click"""
         for card in self.drone_cards.values():
             card.set_selected(False)
         
-        self.drone_cards[addr].set_selected(True)
-        self.drone_selected.emit(addr)
+        self.drone_cards[sysid].set_selected(True)
+        self.drone_selected.emit(sysid)
 
 
 class DetailTab(QWidget):
@@ -500,12 +515,12 @@ class DetailTab(QWidget):
         layout.addWidget(self.tree)
         self.setLayout(layout)
     
-    def set_selected_drone(self, addr: tuple, status: DroneStatus):
+    def set_selected_drone(self, sysid: int, status: DroneStatus):
         """Set the selected drone and display its details"""
-        self.current_drone = addr
-        self.display_drone_details(addr, status)
+        self.current_drone = sysid
+        self.display_drone_details(sysid, status)
     
-    def display_drone_details(self, addr: tuple, status: DroneStatus):
+    def display_drone_details(self, sysid: int, status: DroneStatus):
         """Display detailed information for a drone"""
         self.title_label.setText(f"Drone #{status.sysid} - Detailed Telemetry")
         self.subtitle_label.setText(f"Status: {'Connected' if status.connected else 'Disconnected'}")
@@ -532,8 +547,12 @@ class DetailTab(QWidget):
         network_item.setFont(0, network_font)
         network_item.setFont(1, network_font)
         
-        QTreeWidgetItem(network_item, ["IP Address", addr[0]])
-        QTreeWidgetItem(network_item, ["Port", str(addr[1])])
+        if status.addr:
+            QTreeWidgetItem(network_item, ["IP Address", status.addr[0]])
+            QTreeWidgetItem(network_item, ["Port", str(status.addr[1])])
+        else:
+            QTreeWidgetItem(network_item, ["IP Address", "N/A"])
+            QTreeWidgetItem(network_item, ["Port", "N/A"])
         
         # Battery
         battery_item = QTreeWidgetItem(self.tree, ["Battery", ""])
@@ -617,7 +636,7 @@ class MAVLinkDashboard(QMainWindow):
         super().__init__()
         self.server_host = server_host
         self.server_port = server_port
-        self.drone_statuses = {}
+        self.drone_statuses = {}  # {sysid: DroneStatus} - keyed by sysid
         self.server = None
         self.init_ui()
         self.start_server()
@@ -663,49 +682,59 @@ class MAVLinkDashboard(QMainWindow):
         
         self.server.start()
     
-    def on_drone_connected(self, addr: tuple, sysid: int, compid: int):
+    def on_drone_connected(self, sysid: int, compid: int, port: int):
         """Handle drone connection"""
-        status = DroneStatus(
-            addr=addr,
-            sysid=sysid,
-            compid=compid,
-            connected=True,
-            first_message_time=time.time(),
-            last_heartbeat=time.time(),
-            last_update=datetime.now().strftime("%H:%M:%S"),
-            connection_event="CONNECTED"
-        )
-        
-        self.drone_statuses[addr] = status
-        self.overview_tab.add_drone(addr, status)
+        # Check if drone already exists (reconnection)
+        if sysid in self.drone_statuses:
+            status = self.drone_statuses[sysid]
+            status.connected = True
+            status.connection_event = "RECONNECTED"
+            self.overview_tab.update_drone_status(sysid, status)
+            print(f"✓ DRONE RECONNECTED: SysID {sysid} on new port {port}")
+        else:
+            # New drone
+            status = DroneStatus(
+                sysid=sysid,
+                compid=compid,
+                connected=True,
+                first_message_time=time.time(),
+                last_heartbeat=time.time(),
+                last_update=datetime.now().strftime("%H:%M:%S"),
+                connection_event="CONNECTED"
+            )
+            self.drone_statuses[sysid] = status
+            self.overview_tab.add_drone(sysid, status)
+            print(f"✓ NEW DRONE CONNECTED: SysID {sysid}")
     
-    def on_drone_disconnected(self, addr: tuple, sysid: int):
+    def on_drone_disconnected(self, sysid: int):
         """Handle drone disconnection"""
-        if addr in self.drone_statuses:
-            status = self.drone_statuses[addr]
+        if sysid in self.drone_statuses:
+            status = self.drone_statuses[sysid]
             status.connected = False
             status.connection_event = "DISCONNECTED"
             status.last_update = datetime.now().strftime("%H:%M:%S")
             
-            self.overview_tab.update_drone_status(addr, status)
+            self.overview_tab.update_drone_status(sysid, status)
             
-            if self.detail_tab.current_drone == addr:
-                self.detail_tab.display_drone_details(addr, status)
+            if self.detail_tab.current_drone == sysid:
+                self.detail_tab.display_drone_details(sysid, status)
+            
+            print(f"✗ DRONE DISCONNECTED: SysID {sysid}")
     
-    def on_message_received(self, addr: tuple, status: DroneStatus):
+    def on_message_received(self, sysid: int, status: DroneStatus):
         """Handle message received"""
-        if addr in self.drone_statuses:
-            self.drone_statuses[addr] = status
-            self.overview_tab.update_drone_status(addr, status)
+        if sysid in self.drone_statuses:
+            self.drone_statuses[sysid] = status
+            self.overview_tab.update_drone_status(sysid, status)
             
-            if self.detail_tab.current_drone == addr:
-                self.detail_tab.display_drone_details(addr, status)
+            if self.detail_tab.current_drone == sysid:
+                self.detail_tab.display_drone_details(sysid, status)
     
-    def on_drone_selected(self, addr: tuple):
+    def on_drone_selected(self, sysid: int):
         """Handle drone selection"""
-        if addr in self.drone_statuses:
-            status = self.drone_statuses[addr]
-            self.detail_tab.set_selected_drone(addr, status)
+        if sysid in self.drone_statuses:
+            status = self.drone_statuses[sysid]
+            self.detail_tab.set_selected_drone(sysid, status)
     
     def closeEvent(self, event):
         """Handle window close"""
