@@ -925,7 +925,7 @@ class DetailTab(QWidget):
         QTreeWidgetItem(optional_item, ["SCHED_LOOP_RATE", str(params.get("SCHED_LOOP_RATE", "N/A"))])
         
         # Expand all categories
-        self.tree.expandAll()
+        self.tree.collapseAll()
     
     
     def on_status_updated(self, system_id: int, status: DroneStatus):
@@ -1005,10 +1005,6 @@ def main():
     # Define drone connections (system_id: connection_string)
     drone_connections = {
         1: "udp:172.21.128.1:14550",
-        2: "udp:172.21.128.1:14560",
-        3: "udp:172.21.128.1:14570",
-        4: "udp:172.21.128.1:14580",
-        5: "udp:172.21.128.1:14590",
     }
     
     # Create monitor
