@@ -16,10 +16,13 @@ from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QGridLayout, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem
+    QLabel, QFrame, QGridLayout, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, QLineEdit
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
+
+# Import the AttitudeIndicator widget
+from widgets import AttitudeIndicator
 
 
 @dataclass
@@ -52,6 +55,7 @@ class DroneStatus:
     pitch: float = 0.0
     yaw: float = 0.0
     system_status: str = "UNKNOWN"
+    vertical_speed: float = 0.0  # Climb rate in m/s (positive = climbing)
     
     # Message type tracking
     last_message_type: str = ""
@@ -232,35 +236,48 @@ class MAVLinkServerThread(threading.Thread):
             pass
     
     def _parse_gps(self, status, msg):
-        """Parse GPS_RAW_INT message"""
+        """Parse GPS_RAW_INT message
+        
+        GPS_RAW_INT altitude is in millimeters above mean sea level
+        """
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            status.altitude = msg.alt / 1e3
+            # Convert from millimeters to meters
+            status.altitude = msg.alt / 1000.0
             status.gps_fix = msg.fix_type
             status.gps_satellites = msg.satellites_visible
-        except:
-            pass
+        except Exception as e:
+            print(f"Error parsing GPS: {e}")
     
     def _parse_global_position(self, status, msg):
-        """Parse GLOBAL_POSITION_INT message"""
+        """Parse GLOBAL_POSITION_INT message
+        
+        GLOBAL_POSITION_INT altitude is in millimeters above mean sea level
+        """
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            status.altitude = msg.alt / 1e3
+            # GLOBAL_POSITION_INT altitude is in millimeters, convert to meters
+            status.altitude = msg.alt / 1000.0
             status.groundspeed = (msg.vx**2 + msg.vy**2)**0.5 / 100.0
             status.heading = msg.hdg / 100.0
-        except:
-            pass
+        except Exception as e:
+            print(f"Error parsing GLOBAL_POSITION: {e}, raw alt value: {msg.alt}")
     
     def _parse_vfr_hud(self, status, msg):
-        """Parse VFR_HUD message"""
+        """Parse VFR_HUD message
+        
+        VFR_HUD altitude is already in meters
+        """
         try:
             status.groundspeed = msg.groundspeed
+            # VFR_HUD altitude is already in meters
             status.altitude = msg.alt
             status.heading = msg.heading
-        except:
-            pass
+            status.vertical_speed = msg.climb  # Climb rate in m/s
+        except Exception as e:
+            print(f"Error parsing VFR_HUD: {e}")
     
     @staticmethod
     def _get_system_status_name(status_code):
@@ -301,7 +318,7 @@ class MAVLinkServerThread(threading.Thread):
 
 
 class DroneCard(QFrame):
-    """Widget displaying drone status as a card"""
+    """Widget displaying drone status as a card with attitude indicator"""
     
     clicked = pyqtSignal(int)  # sysid
     
@@ -318,23 +335,27 @@ class DroneCard(QFrame):
     
     def init_ui(self):
         """Initialize UI"""
-        layout = QVBoxLayout()
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(8)
+        
+        # Top section - Info
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(4)
         
         # Drone ID
-        drone_label = QLabel(f"sysid #{self.status.sysid}")
-        drone_font = QFont("Consolas", 9, QFont.Bold)
+        drone_label = QLabel(f"Drone #{self.status.sysid}")
+        drone_font = QFont("Consolas", 11, QFont.Bold)
         drone_label.setFont(drone_font)
-        drone_label.setStyleSheet("color: #888888; background: transparent; border: none;")
-        layout.addWidget(drone_label)
+        drone_label.setStyleSheet("background: transparent; border: none;")
+        info_layout.addWidget(drone_label)
         
         # Connection status
         self.status_label = QLabel("● Connecting...")
         status_font = QFont("Consolas", 9)
         self.status_label.setFont(status_font)
         self.status_label.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(self.status_label)
+        info_layout.addWidget(self.status_label)
         
         # Address
         addr_text = f"{self.status.addr[0]}:{self.status.addr[1]}" if self.status.addr else "N/A"
@@ -343,26 +364,59 @@ class DroneCard(QFrame):
         addr_font.setItalic(True)
         self.addr_label.setFont(addr_font)
         self.addr_label.setStyleSheet("color: #888888; background: transparent; border: none;")
-        layout.addWidget(self.addr_label)
+        info_layout.addWidget(self.addr_label)
         
-        # Messages
+        # Messages and Uptime in horizontal layout
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(10)
+        
         self.messages_label = QLabel("Messages: 0")
         msg_font = QFont("Consolas", 8)
         self.messages_label.setFont(msg_font)
         self.messages_label.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(self.messages_label)
+        stats_layout.addWidget(self.messages_label)
         
-        # Uptime
         self.uptime_label = QLabel("Uptime: 0s")
         uptime_font = QFont("Consolas", 8)
         self.uptime_label.setFont(uptime_font)
         self.uptime_label.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(self.uptime_label)
+        stats_layout.addWidget(self.uptime_label)
+        stats_layout.addStretch()
         
-        layout.addStretch()
-        self.setLayout(layout)
-        self.setMaximumHeight(140)
-        self.setMinimumWidth(200)
+        info_layout.addLayout(stats_layout)
+        main_layout.addLayout(info_layout)
+        
+        # Middle section - Attitude Indicator
+        self.attitude_indicator = AttitudeIndicator(parent=self, min_width=250, min_height=250)
+        main_layout.addWidget(self.attitude_indicator)
+        
+        # Bottom section - Attitude values
+        attitude_layout = QVBoxLayout()
+        attitude_layout.setSpacing(2)
+        
+        self.roll_label = QLabel(f"Roll: {self.status.roll:.1f}°")
+        roll_font = QFont("Consolas", 8)
+        self.roll_label.setFont(roll_font)
+        self.roll_label.setStyleSheet("background: transparent; border: none;")
+        attitude_layout.addWidget(self.roll_label)
+        
+        self.pitch_label = QLabel(f"Pitch: {self.status.pitch:.1f}°")
+        pitch_font = QFont("Consolas", 8)
+        self.pitch_label.setFont(pitch_font)
+        self.pitch_label.setStyleSheet("background: transparent; border: none;")
+        attitude_layout.addWidget(self.pitch_label)
+        
+        self.yaw_label = QLabel(f"Yaw: {self.status.yaw:.1f}°")
+        yaw_font = QFont("Consolas", 8)
+        self.yaw_label.setFont(yaw_font)
+        self.yaw_label.setStyleSheet("background: transparent; border: none;")
+        attitude_layout.addWidget(self.yaw_label)
+        
+        main_layout.addLayout(attitude_layout)
+        
+        self.setLayout(main_layout)
+        self.setMinimumHeight(450)
+        self.setMinimumWidth(300)
     
     def update_status(self, status: DroneStatus):
         """Update drone status display"""
@@ -385,6 +439,12 @@ class DroneCard(QFrame):
         if status.first_message_time > 0:
             uptime = time.time() - status.first_message_time
             self.uptime_label.setText(f"Uptime: {uptime:.1f}s")
+        
+        # Update attitude indicator
+        self.roll_label.setText(f"Roll: {status.roll:.1f}°")
+        self.pitch_label.setText(f"Pitch: {status.pitch:.1f}°")
+        self.yaw_label.setText(f"Yaw: {status.yaw:.1f}°")
+        self.attitude_indicator.set_attitude(status.pitch, status.roll)
     
     def set_selected(self, selected: bool):
         """Set selection state"""
@@ -423,11 +483,34 @@ class OverviewTab(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
         
+        # Title and Reference Altitude (Horizontal Layout)
+        title_layout = QHBoxLayout()
+        title_layout.setSpacing(15)
+        
         # Title
         title_label = QLabel("Connected Drones Overview")
         title_font = QFont("Consolas", 12, QFont.Bold)
         title_label.setFont(title_font)
-        layout.addWidget(title_label)
+        title_layout.addWidget(title_label)
+        
+        # Reference Altitude Label
+        ref_alt_label = QLabel("Reference Altitude (m):")
+        ref_alt_font = QFont("Consolas", 9)
+        ref_alt_label.setFont(ref_alt_font)
+        title_layout.addWidget(ref_alt_label)
+        
+        # Reference Altitude Input
+        self.reference_altitude = QLineEdit()
+        self.reference_altitude.setText("0.0")
+        self.reference_altitude.setMaximumWidth(100)
+        self.reference_altitude.setFont(QFont("Consolas", 9))
+        self.reference_altitude.setStyleSheet(
+            "QLineEdit { background-color: #2A2A3E; color: #00CC00; border: 1px solid #444444; padding: 5px; }"
+        )
+        title_layout.addWidget(self.reference_altitude)
+        title_layout.addStretch()
+        
+        layout.addLayout(title_layout)
         
         # Create scrollable area
         scroll_area = QScrollArea()
@@ -483,9 +566,10 @@ class OverviewTab(QWidget):
 class DetailTab(QWidget):
     """Detail tab showing comprehensive drone information"""
     
-    def __init__(self, parent=None):
+    def __init__(self, overview_tab=None, parent=None):
         super().__init__(parent)
         self.current_drone = None
+        self.overview_tab = overview_tab
         self.init_ui()
     
     def init_ui(self):
@@ -497,7 +581,6 @@ class DetailTab(QWidget):
         title_font = QFont("Consolas", 12, QFont.Bold)
         self.title_label.setFont(title_font)
         layout.addWidget(self.title_label)
-        
         # Subtitle
         self.subtitle_label = QLabel("Select a drone from the overview to view details")
         subtitle_font = QFont("Consolas", 9)
@@ -585,17 +668,43 @@ class DetailTab(QWidget):
         QTreeWidgetItem(motion_item, ["Ground Speed", f"{status.groundspeed:.2f}m/s"])
         QTreeWidgetItem(motion_item, ["Heading", f"{status.heading:.1f}°"])
         
-        # Attitude
-        attitude_item = QTreeWidgetItem(self.tree, ["Attitude", ""])
-        attitude_font = QFont("Consolas", 10, QFont.Bold)
-        attitude_item.setFont(0, attitude_font)
-        attitude_item.setFont(1, attitude_font)
+        # Altitude Information
+        altitude_item = QTreeWidgetItem(self.tree, ["Altitude Information", ""])
+        altitude_font = QFont("Consolas", 10, QFont.Bold)
+        altitude_item.setFont(0, altitude_font)
+        altitude_item.setFont(1, altitude_font)
         
-        QTreeWidgetItem(attitude_item, ["Roll", f"{status.roll:.2f}°"])
-        QTreeWidgetItem(attitude_item, ["Pitch", f"{status.pitch:.2f}°"])
-        QTreeWidgetItem(attitude_item, ["Yaw", f"{status.yaw:.2f}°"])
+        # Absolute altitude (from barometer, relative to sea level)
+        QTreeWidgetItem(altitude_item, ["Absolute Altitude", f"{status.altitude:.2f}m"])
         
-        # Message Statistics
+        # Relative altitude (above reference point - like home point)
+        ref_alt = 0.0
+        if self.overview_tab:
+            try:
+                ref_alt = float(self.overview_tab.reference_altitude.text())
+                ref_alt = status.altitude - ref_alt
+            except (ValueError, AttributeError):
+                ref_alt = 0.0
+        
+        relative_altitude = status.altitude - ref_alt
+        QTreeWidgetItem(altitude_item, ["Reference Altitude", f"{ref_alt:.2f}m"])
+        QTreeWidgetItem(altitude_item, ["Relative Altitude", f"{relative_altitude:.2f}m"])
+        
+        # Altitude status indicator
+        altitude_status = "Valid" if status.altitude > 0 else "No Data"
+        QTreeWidgetItem(altitude_item, ["Altitude Status", altitude_status])
+        
+        # Altitude in feet (for reference)
+        altitude_feet = status.altitude * 3.28084  # meters to feet conversion
+        QTreeWidgetItem(altitude_item, ["Altitude (Feet)", f"{altitude_feet:.2f}ft"])
+        
+        # Vertical Speed / Climb Rate
+        climb_direction = "↑ Climbing" if status.vertical_speed > 0.1 else "↓ Descending" if status.vertical_speed < -0.1 else "→ Level"
+        QTreeWidgetItem(altitude_item, ["Climb Rate", f"{status.vertical_speed:.2f}m/s {climb_direction}"])
+        
+        # Altitude source
+        QTreeWidgetItem(altitude_item, ["Altitude Source", "Barometer"])
+
         stats_item = QTreeWidgetItem(self.tree, ["Message Statistics", ""])
         stats_font = QFont("Consolas", 10, QFont.Bold)
         stats_item.setFont(0, stats_font)
@@ -658,7 +767,7 @@ class MAVLinkDashboard(QMainWindow):
         self.overview_tab = OverviewTab()
         self.overview_tab.drone_selected.connect(self.on_drone_selected)
         
-        self.detail_tab = DetailTab()
+        self.detail_tab = DetailTab(overview_tab=self.overview_tab)
         
         # Add to splitter
         splitter.addWidget(self.overview_tab)
