@@ -1,24 +1,163 @@
+import sys
 import math
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPainterPath
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt5.QtCore import Qt, QTimer, QPoint
+from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath
+from PyQt5.QtCore import pyqtSignal, QObject
+
+
+class MockData(QObject):
+    """Mock data generator for attitude and altitude values"""
+    data_updated = pyqtSignal(float, float, float)  # pitch, roll, altitude
+    
+    def __init__(self):
+        super().__init__()
+        self.pitch = 0.0
+        self.roll = 0.0
+        self.altitude = 0.0  # meters
+        self.pitch_direction = 1
+        self.roll_direction = 1
+        self.altitude_direction = 1
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_data)
+        self.timer.start(100)  # Update every 100ms
+        self.time_count = 0
+    
+    def update_data(self):
+        """Simulate attitude and altitude data changes"""
+        self.time_count += 1
+        
+        # Oscillate pitch between -30 and +30 degrees
+        self.pitch += self.pitch_direction * 2
+        if self.pitch >= 30 or self.pitch <= -30:
+            self.pitch_direction *= -1
+        
+        # Oscillate roll between -45 and +45 degrees
+        self.roll += self.roll_direction * 1.5
+        if self.roll >= 45 or self.roll <= -45:
+            self.roll_direction *= -1
+        
+        # Simulate takeoff and landing
+        # Climb for 10 seconds, descent for 10 seconds, repeat
+        if self.time_count < 100:  # Takeoff phase
+            self.altitude += self.altitude_direction * 0.5  # 0.5m per 100ms
+        elif self.time_count < 200:  # Descent phase
+            self.altitude += self.altitude_direction * 0.5
+        else:  # Reset
+            self.time_count = 0
+            self.altitude_direction *= -1
+        
+        # Clamp altitude to reasonable values
+        self.altitude = max(0.0, min(self.altitude, 100.0))
+        
+        self.data_updated.emit(self.pitch, self.roll, self.altitude)
+
+
+class AltitudeBar(QWidget):
+    """Separate altitude bar widget"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.altitude = 0.0
+        self.setMinimumSize(80, 300)
+        self.setStyleSheet("background-color: #f0f0f0;")
+    
+    def set_altitude(self, altitude):
+        """Update altitude value"""
+        self.altitude = max(0.0, min(altitude, 100.0))
+        self.update()
+    
+    def paintEvent(self, event):
+        """Draw the altitude bar"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        
+        # Altitude bar dimensions
+        bar_x = width / 2 - 20
+        bar_y = 20
+        bar_width = 40
+        bar_height = height - 60
+        max_altitude = 100.0
+        
+        # Draw background box
+        painter.setPen(QPen(Qt.black, 2))
+        painter.setBrush(QColor(50, 50, 50))
+        painter.drawRect(int(bar_x), int(bar_y), int(bar_width), int(bar_height))
+        
+        # Draw altitude scale (0 at bottom, 100 at top)
+        painter.setPen(QPen(Qt.white, 1))
+        painter.setFont(QFont("Arial", 7))
+        
+        # Draw major and minor tick marks
+        for alt in range(0, int(max_altitude) + 1, 5):
+            y_pos = bar_y + bar_height - (alt / max_altitude) * bar_height
+            
+            if alt % 10 == 0:
+                # Major tick mark (every 10m)
+                painter.drawLine(
+                    int(bar_x), int(y_pos),
+                    int(bar_x + 12), int(y_pos)
+                )
+                # Altitude number on the right
+                painter.drawText(
+                    int(bar_x + 15), int(y_pos - 6),
+                    30, 12,
+                    Qt.AlignLeft | Qt.AlignVCenter,
+                    str(int(alt))
+                )
+            else:
+                # Minor tick mark (every 5m)
+                painter.drawLine(
+                    int(bar_x + 4), int(y_pos),
+                    int(bar_x + 10), int(y_pos)
+                )
+        
+        # Draw cyan highlight line at current altitude
+        current_alt_y = bar_y + bar_height - (self.altitude / max_altitude) * bar_height
+        painter.setPen(QPen(QColor(0, 255, 255), 3))
+        painter.drawLine(
+            int(bar_x - 8), int(current_alt_y),
+            int(bar_x + bar_width + 8), int(current_alt_y)
+        )
+        
+        # Draw current altitude display box (below the scale)
+        box_y = bar_y + bar_height + 10
+        box_height = 25
+        
+        painter.setPen(QPen(Qt.white, 2))
+        
+        # Draw altitude value in box (green text)
+        painter.setPen(QPen(QColor(0, 255, 0), 1))
+        painter.setFont(QFont("Arial", 11, QFont.Bold))
+        altitude_text = f"{int(self.altitude)}m"
+        painter.drawText(
+            int(bar_x - 10), int(box_y),
+            int(bar_width + 20), int(box_height),
+            Qt.AlignCenter,
+            altitude_text
+        )
 
 
 class AttitudeIndicator(QWidget):
     """Custom Attitude Indicator Widget"""
     
-    def __init__(self, parent=None, min_width=300, min_height=300):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.pitch = 0.0  # degrees (-90 to +90)
         self.roll = 0.0   # degrees (-180 to +180)
+        self.altitude = 0.0  # meters
         
-        self.setMinimumSize(min_width, min_height)
+        self.setMinimumSize(250, 250)
         self.setStyleSheet("background-color: #f0f0f0;")
     
-    def set_attitude(self, pitch, roll):
-        """Update pitch and roll values"""
+    def set_attitude(self, pitch, roll, altitude=0.0):
+        """Update pitch, roll, and altitude values"""
         self.pitch = pitch
         self.roll = roll
+        self.altitude = altitude
         self.update()  # Trigger repaint
     
     def paintEvent(self, event):
@@ -176,3 +315,61 @@ class AttitudeIndicator(QWidget):
              QPoint(int(pointer_x + 8), int(pointer_y - 5)),
              QPoint(int(pointer_x), int(pointer_y + 5))]
         )
+
+
+class MainWindow(QWidget):
+    """Main application window"""
+    
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+    
+    def initUI(self):
+        """Initialize UI components"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Drone Attitude & Altitude Indicator - PyQt5")
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Horizontal layout for attitude indicator and altitude bar
+        instruments_layout = QHBoxLayout()
+        
+        # Attitude indicator widget
+        self.attitude = AttitudeIndicator()
+        instruments_layout.addWidget(self.attitude)
+        
+        # Altitude bar widget
+        self.altitude_bar = AltitudeBar()
+        instruments_layout.addWidget(self.altitude_bar)
+        
+        layout.addLayout(instruments_layout)
+        
+        # Status label
+        self.status_label = QLabel("Pitch: 0.0°  Roll: 0.0°  Alt: 0.0m")
+        self.status_label.setFont(QFont("Arial", 11))
+        layout.addWidget(self.status_label)
+        
+        self.setLayout(layout)
+        self.setWindowTitle("Drone Attitude & Altitude Indicator")
+        self.setGeometry(100, 100, 650, 500)
+        
+        # Connect mock data
+        self.mock_data = MockData()
+        self.mock_data.data_updated.connect(self.on_data_updated)
+    
+    def on_data_updated(self, pitch, roll, altitude):
+        """Handle mock data updates"""
+        self.attitude.set_attitude(pitch, roll, altitude)
+        self.altitude_bar.set_altitude(altitude)
+        self.status_label.setText(
+            f"Pitch: {pitch:.1f}°  Roll: {roll:.1f}°  Alt: {altitude:.1f}m"
+        )
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())

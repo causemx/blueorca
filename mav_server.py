@@ -22,7 +22,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
 
 # Import the AttitudeIndicator widget
-from widgets import AttitudeIndicator
+from widgets import AttitudeIndicator, AltitudeBar
 
 
 @dataclass
@@ -336,8 +336,8 @@ class DroneCard(QFrame):
     def init_ui(self):
         """Initialize UI"""
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(4)
         
         # Top section - Info
         info_layout = QVBoxLayout()
@@ -345,14 +345,14 @@ class DroneCard(QFrame):
         
         # Drone ID
         drone_label = QLabel(f"Drone #{self.status.sysid}")
-        drone_font = QFont("Consolas", 11, QFont.Bold)
+        drone_font = QFont("Consolas", 9, QFont.Bold)
         drone_label.setFont(drone_font)
         drone_label.setStyleSheet("background: transparent; border: none;")
         info_layout.addWidget(drone_label)
         
         # Connection status
         self.status_label = QLabel("● Connecting...")
-        status_font = QFont("Consolas", 9)
+        status_font = QFont("Consolas", 7)
         self.status_label.setFont(status_font)
         self.status_label.setStyleSheet("background: transparent; border: none;")
         info_layout.addWidget(self.status_label)
@@ -360,7 +360,7 @@ class DroneCard(QFrame):
         # Address
         addr_text = f"{self.status.addr[0]}:{self.status.addr[1]}" if self.status.addr else "N/A"
         self.addr_label = QLabel(addr_text)
-        addr_font = QFont("Consolas", 8)
+        addr_font = QFont("Consolas", 7)
         addr_font.setItalic(True)
         self.addr_label.setFont(addr_font)
         self.addr_label.setStyleSheet("color: #888888; background: transparent; border: none;")
@@ -371,13 +371,13 @@ class DroneCard(QFrame):
         stats_layout.setSpacing(10)
         
         self.messages_label = QLabel("Messages: 0")
-        msg_font = QFont("Consolas", 8)
+        msg_font = QFont("Consolas", 7)
         self.messages_label.setFont(msg_font)
         self.messages_label.setStyleSheet("background: transparent; border: none;")
         stats_layout.addWidget(self.messages_label)
         
         self.uptime_label = QLabel("Uptime: 0s")
-        uptime_font = QFont("Consolas", 8)
+        uptime_font = QFont("Consolas", 7)
         self.uptime_label.setFont(uptime_font)
         self.uptime_label.setStyleSheet("background: transparent; border: none;")
         stats_layout.addWidget(self.uptime_label)
@@ -386,28 +386,36 @@ class DroneCard(QFrame):
         info_layout.addLayout(stats_layout)
         main_layout.addLayout(info_layout)
         
-        # Middle section - Attitude Indicator
-        self.attitude_indicator = AttitudeIndicator(parent=self, min_width=250, min_height=250)
-        main_layout.addWidget(self.attitude_indicator)
+        # Middle section - Attitude Indicator and Altitude Bar (side by side)
+        instruments_layout = QHBoxLayout()
+        instruments_layout.setSpacing(8)
+        
+        self.attitude_indicator = AttitudeIndicator(parent=self)
+        instruments_layout.addWidget(self.attitude_indicator)
+        
+        self.altitude_bar = AltitudeBar(parent=self)
+        instruments_layout.addWidget(self.altitude_bar)
+        
+        main_layout.addLayout(instruments_layout)
         
         # Bottom section - Attitude values
         attitude_layout = QVBoxLayout()
         attitude_layout.setSpacing(2)
         
         self.roll_label = QLabel(f"Roll: {self.status.roll:.1f}°")
-        roll_font = QFont("Consolas", 8)
+        roll_font = QFont("Consolas", 6)
         self.roll_label.setFont(roll_font)
         self.roll_label.setStyleSheet("background: transparent; border: none;")
         attitude_layout.addWidget(self.roll_label)
         
         self.pitch_label = QLabel(f"Pitch: {self.status.pitch:.1f}°")
-        pitch_font = QFont("Consolas", 8)
+        pitch_font = QFont("Consolas", 6)
         self.pitch_label.setFont(pitch_font)
         self.pitch_label.setStyleSheet("background: transparent; border: none;")
         attitude_layout.addWidget(self.pitch_label)
         
         self.yaw_label = QLabel(f"Yaw: {self.status.yaw:.1f}°")
-        yaw_font = QFont("Consolas", 8)
+        yaw_font = QFont("Consolas", 6)
         self.yaw_label.setFont(yaw_font)
         self.yaw_label.setStyleSheet("background: transparent; border: none;")
         attitude_layout.addWidget(self.yaw_label)
@@ -415,8 +423,8 @@ class DroneCard(QFrame):
         main_layout.addLayout(attitude_layout)
         
         self.setLayout(main_layout)
-        self.setMinimumHeight(450)
-        self.setMinimumWidth(300)
+        self.setMinimumHeight(280)
+        self.setMinimumWidth(350)
     
     def update_status(self, status: DroneStatus):
         """Update drone status display"""
@@ -440,11 +448,12 @@ class DroneCard(QFrame):
             uptime = time.time() - status.first_message_time
             self.uptime_label.setText(f"Uptime: {uptime:.1f}s")
         
-        # Update attitude indicator
+        # Update attitude indicator and altitude bar
         self.roll_label.setText(f"Roll: {status.roll:.1f}°")
         self.pitch_label.setText(f"Pitch: {status.pitch:.1f}°")
         self.yaw_label.setText(f"Yaw: {status.yaw:.1f}°")
-        self.attitude_indicator.set_attitude(status.pitch, status.roll)
+        self.attitude_indicator.set_attitude(status.pitch, status.roll, status.altitude)
+        self.altitude_bar.set_altitude(status.altitude)
     
     def set_selected(self, selected: bool):
         """Set selection state"""
