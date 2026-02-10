@@ -59,7 +59,7 @@ class AltitudeBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.altitude = 0.0
-        self.setMinimumSize(80, 300)
+        self.setMinimumSize(60, 200)
         self.setStyleSheet("background-color: #f0f0f0;")
     
     def set_altitude(self, altitude):
@@ -89,7 +89,7 @@ class AltitudeBar(QWidget):
         
         # Draw altitude scale (0 at bottom, 100 at top)
         painter.setPen(QPen(Qt.white, 1))
-        painter.setFont(QFont("Arial", 7))
+        painter.setFont(QFont("Arial", 6))
         
         # Draw major and minor tick marks
         for alt in range(0, int(max_altitude) + 1, 5):
@@ -128,10 +128,15 @@ class AltitudeBar(QWidget):
         box_height = 25
         
         painter.setPen(QPen(Qt.white, 2))
+        painter.setBrush(QColor(0, 0, 0))
+        painter.drawRect(
+            int(bar_x - 10), int(box_y),
+            int(bar_width + 20), int(box_height)
+        )
         
         # Draw altitude value in box (green text)
         painter.setPen(QPen(QColor(0, 255, 0), 1))
-        painter.setFont(QFont("Arial", 11, QFont.Bold))
+        painter.setFont(QFont("Courier", 9, QFont.Bold))
         altitude_text = f"{int(self.altitude)}m"
         painter.drawText(
             int(bar_x - 10), int(box_y),
@@ -149,15 +154,17 @@ class AttitudeIndicator(QWidget):
         self.pitch = 0.0  # degrees (-90 to +90)
         self.roll = 0.0   # degrees (-180 to +180)
         self.altitude = 0.0  # meters
+        self.ground_speed = 0.0  # m/s
         
-        self.setMinimumSize(250, 250)
+        self.setMinimumSize(200, 200)
         self.setStyleSheet("background-color: #f0f0f0;")
     
-    def set_attitude(self, pitch, roll, altitude=0.0):
-        """Update pitch, roll, and altitude values"""
+    def set_attitude(self, pitch, roll, altitude=0.0, ground_speed=0.0):
+        """Update pitch, roll, altitude, and ground_speed values"""
         self.pitch = pitch
         self.roll = roll
         self.altitude = altitude
+        self.ground_speed = ground_speed
         self.update()  # Trigger repaint
     
     def paintEvent(self, event):
@@ -221,7 +228,7 @@ class AttitudeIndicator(QWidget):
         
         # Draw pitch lines and numbers
         painter.setPen(QPen(Qt.white, 1))
-        painter.setFont(QFont("Arial", 8))
+        painter.setFont(QFont("Arial", 6))
         
         for pitch_val in range(-90, 91, 10):
             if pitch_val % 10 == 0 and pitch_val != 0:
@@ -282,7 +289,7 @@ class AttitudeIndicator(QWidget):
         
         # Draw roll scale (outer ring)
         painter.setPen(QPen(Qt.black, 1))
-        painter.setFont(QFont("Arial", 9))
+        painter.setFont(QFont("Arial", 7))
         
         for roll_val in range(0, 360, 30):
             angle_rad = math.radians(roll_val)
@@ -315,6 +322,36 @@ class AttitudeIndicator(QWidget):
              QPoint(int(pointer_x + 8), int(pointer_y - 5)),
              QPoint(int(pointer_x), int(pointer_y + 5))]
         )
+        
+        # Draw black background circle in center for altitude display
+        painter.setPen(QPen(Qt.white, 1))
+        painter.setBrush(QColor(0, 0, 0))
+        painter.drawEllipse(
+            int(center_x - 30), int(center_y - 30),
+            60, 60
+        )
+        
+        # Draw altitude value in center
+        painter.setPen(QPen(Qt.white, 2))
+        painter.setFont(QFont("Arial", 9, QFont.Bold))
+        altitude_text = f"{int(self.altitude)}m"
+        painter.drawText(
+            int(center_x - 28), int(center_y - 30),
+            56, 20,
+            Qt.AlignCenter,
+            altitude_text
+        )
+        
+        # Draw ground speed value below altitude
+        painter.setPen(QPen(Qt.white, 2))
+        painter.setFont(QFont("Arial", 8, QFont.Bold))
+        speed_text = f"{self.ground_speed:.1f}m/s"
+        painter.drawText(
+            int(center_x - 28), int(center_y + 5),
+            56, 20,
+            Qt.AlignCenter,
+            speed_text
+        )
 
 
 class MainWindow(QWidget):
@@ -329,7 +366,7 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         # Title
-        title = QLabel("Drone Attitude & Altitude Indicator - PyQt5")
+        title = QLabel("Drone Attitude & Altitude Indicator")
         title.setFont(QFont("Arial", 14, QFont.Bold))
         layout.addWidget(title)
         
@@ -341,8 +378,8 @@ class MainWindow(QWidget):
         instruments_layout.addWidget(self.attitude)
         
         # Altitude bar widget
-        self.altitude_bar = AltitudeBar()
-        instruments_layout.addWidget(self.altitude_bar)
+        # self.altitude_bar = AltitudeBar()
+        # instruments_layout.addWidget(self.altitude_bar)
         
         layout.addLayout(instruments_layout)
         
@@ -362,7 +399,7 @@ class MainWindow(QWidget):
     def on_data_updated(self, pitch, roll, altitude):
         """Handle mock data updates"""
         self.attitude.set_attitude(pitch, roll, altitude)
-        self.altitude_bar.set_altitude(altitude)
+        # self.altitude_bar.set_altitude(altitude)
         self.status_label.setText(
             f"Pitch: {pitch:.1f}°  Roll: {roll:.1f}°  Alt: {altitude:.1f}m"
         )

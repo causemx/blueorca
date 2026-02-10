@@ -22,7 +22,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
 
 # Import the AttitudeIndicator widget
-from widgets import AttitudeIndicator, AltitudeBar
+from widgets import AttitudeIndicator
 
 
 @dataclass
@@ -347,7 +347,7 @@ class DroneCard(QFrame):
         drone_label = QLabel(f"Drone #{self.status.sysid}")
         drone_font = QFont("Consolas", 9, QFont.Bold)
         drone_label.setFont(drone_font)
-        drone_label.setStyleSheet("background: transparent; border: none;")
+        drone_label.setStyleSheet("color: #888888; background: transparent; border: none;")
         info_layout.addWidget(drone_label)
         
         # Connection status
@@ -386,17 +386,9 @@ class DroneCard(QFrame):
         info_layout.addLayout(stats_layout)
         main_layout.addLayout(info_layout)
         
-        # Middle section - Attitude Indicator and Altitude Bar (side by side)
-        instruments_layout = QHBoxLayout()
-        instruments_layout.setSpacing(8)
-        
+        # Middle section - Attitude Indicator only
         self.attitude_indicator = AttitudeIndicator(parent=self)
-        instruments_layout.addWidget(self.attitude_indicator)
-        
-        self.altitude_bar = AltitudeBar(parent=self)
-        instruments_layout.addWidget(self.altitude_bar)
-        
-        main_layout.addLayout(instruments_layout)
+        main_layout.addWidget(self.attitude_indicator)
         
         # Bottom section - Attitude values
         attitude_layout = QVBoxLayout()
@@ -448,12 +440,11 @@ class DroneCard(QFrame):
             uptime = time.time() - status.first_message_time
             self.uptime_label.setText(f"Uptime: {uptime:.1f}s")
         
-        # Update attitude indicator and altitude bar
+        # Update attitude indicator with telemetry data
         self.roll_label.setText(f"Roll: {status.roll:.1f}°")
         self.pitch_label.setText(f"Pitch: {status.pitch:.1f}°")
         self.yaw_label.setText(f"Yaw: {status.yaw:.1f}°")
-        self.attitude_indicator.set_attitude(status.pitch, status.roll, status.altitude)
-        self.altitude_bar.set_altitude(status.altitude)
+        self.attitude_indicator.set_attitude(status.pitch, status.roll, status.altitude, status.groundspeed)
     
     def set_selected(self, selected: bool):
         """Set selection state"""
@@ -713,6 +704,24 @@ class DetailTab(QWidget):
         
         # Altitude source
         QTreeWidgetItem(altitude_item, ["Altitude Source", "Barometer"])
+        
+        # Speed Information
+        speed_item = QTreeWidgetItem(self.tree, ["Speed Information", ""])
+        speed_font = QFont("Consolas", 10, QFont.Bold)
+        speed_item.setFont(0, speed_font)
+        speed_item.setFont(1, speed_font)
+        
+        QTreeWidgetItem(speed_item, ["Ground Speed (m/s)", f"{status.groundspeed:.2f}"])
+        # Convert ground speed to km/h and knots for reference
+        speed_kmh = status.groundspeed * 3.6
+        speed_knots = status.groundspeed * 1.94384
+        QTreeWidgetItem(speed_item, ["Ground Speed (km/h)", f"{speed_kmh:.2f}"])
+        QTreeWidgetItem(speed_item, ["Ground Speed (knots)", f"{speed_knots:.2f}"])
+        QTreeWidgetItem(speed_item, ["Heading", f"{status.heading:.1f}°"])
+        
+        # Speed status indicator
+        speed_status = "Moving" if status.groundspeed > 0.5 else "Stationary"
+        QTreeWidgetItem(speed_item, ["Speed Status", speed_status])
 
         stats_item = QTreeWidgetItem(self.tree, ["Message Statistics", ""])
         stats_font = QFont("Consolas", 10, QFont.Bold)
