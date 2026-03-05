@@ -139,7 +139,7 @@ class MAVLinkServerThread(threading.Thread):
                         # Update existing drone
                         self._update_drone_status(sysid, addr, msg, msg_type)
                     
-        except Exception as e:
+        except Exception:
             # Silently ignore parsing errors
             pass
     
@@ -192,7 +192,7 @@ class MAVLinkServerThread(threading.Thread):
                 self._parse_global_position(status, msg)
             elif msg_type == 'VFR_HUD':
                 self._parse_vfr_hud(status, msg)
-        except Exception as e:
+        except Exception:
             pass
         
         self.signal_emitter.drone_message_received.emit(sysid, status)
@@ -213,7 +213,7 @@ class MAVLinkServerThread(threading.Thread):
             status.battery_percent = msg.battery_remaining
             status.battery_voltage = msg.voltage_battery / 1000.0
             status.battery_current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
-        except:
+        except Exception:
             pass
     
     def _parse_battery_status(self, status, msg):
@@ -223,7 +223,7 @@ class MAVLinkServerThread(threading.Thread):
                 status.battery_voltage = msg.voltages[0] / 1000.0
             status.battery_current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
             status.battery_percent = msg.battery_remaining
-        except:
+        except Exception:
             pass
     
     def _parse_attitude(self, status, msg):
@@ -232,7 +232,7 @@ class MAVLinkServerThread(threading.Thread):
             status.roll = msg.roll
             status.pitch = msg.pitch
             status.yaw = msg.yaw
-        except:
+        except Exception:
             pass
     
     def _parse_gps(self, status, msg):
