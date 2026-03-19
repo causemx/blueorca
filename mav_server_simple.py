@@ -2,12 +2,16 @@ import time
 import socket
 import threading
 import argparse
+import csv
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, Optional, Tuple
 from loguru import logger
 
 from capture.capturer import MessageCapturer
+from capture.processor import MessageProcessor
+from analytics.engine import NetworkAnalyticsEngine
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 
@@ -41,6 +45,7 @@ class MAVLinkServer(threading.Thread):
         on_connected: Optional[Callable[[int, int, Tuple[str, int]], None]] = None,
         on_disconnected: Optional[Callable[[int], None]] = None,
         on_message_received: Optional[Callable[[int, DroneStatus], None]] = None,
+        enable_analytics: bool = True,
     ):
         super().__init__(daemon=True)
         self.host = host
@@ -57,7 +62,14 @@ class MAVLinkServer(threading.Thread):
         self.drones: Dict[int, DroneStatus] = {}
         self.parsers: Dict[Tuple[str, int], mavlink.MAVLink] = {}
         
+        # Message capture & analytics
         self.capturer = MessageCapturer()
+        self.enable_analytics = enable_analytics
+        self.analytics: Optional[NetworkAnalyticsEngine] = None
+        self.processor: Optional[MessageProcessor] = None
+        
+        if enable_analytics:
+            self.analytics = NetworkAnalyticsEngine(windows=[1, 10, 60])
 
         # Event callbacks
         self.on_connected = on_connected or self._default_callback
@@ -103,6 +115,10 @@ class MAVLinkServer(threading.Thread):
             
             self.running = True
             logger.info(f"* MAVLink server started on {self.host}:{self.actual_port}")
+            
+            # Start analytics processor if enabled
+            if self.enable_analytics:
+                self._start_analytics()
 
             # Main receive loop
             while self.running:
@@ -125,6 +141,27 @@ class MAVLinkServer(threading.Thread):
             raise
         finally:
             self.cleanup()
+
+    def _start_analytics(self):
+        """Start the analytics message processor"""
+        logger.info("Starting analytics processor...")
+        
+        self.processor = MessageProcessor(
+            queue=self.capturer.queue,
+            batch_size=100,
+            batch_timeout=0.5,
+        )
+        
+        # Register analytics handler
+        self.processor.register_handler(self._analytics_handler)
+        self.processor.start()
+        
+        logger.info("Analytics processor started")
+    
+    def _analytics_handler(self, batch):
+        """Handler for processing batch of messages through analytics"""
+        if self.analytics:
+            self.analytics.process_batch(batch)
 
     def _handle_message(self, data: bytes, addr: Tuple[str, int]):
         """Process incoming MAVLink message"""
@@ -187,7 +224,7 @@ class MAVLinkServer(threading.Thread):
             drone.connection_event = "RECONNECTED"
             self.on_connected(drone.sysid, drone.compid, addr)
 
-    def _check_disconnections(self):
+    def _check_disconnections(self) -> None:
         """
         Check for drones that haven't sent messages within timeout period.
         Mark them as disconnected and trigger callback.
@@ -218,10 +255,19 @@ class MAVLinkServer(threading.Thread):
     def get_all_drones(self) -> Dict[int, DroneStatus]:
         """Get all connected drones"""
         return self.drones.copy()
+    
+    def get_analytics_report(self, window_s: int = 1) -> Optional[Dict]:
+        """Get current analytics report"""
+        if self.analytics:
+            return self.analytics.get_report(window_s=window_s)
+        return None
 
     def stop(self):
         """Stop the server"""
         self.running = False
+        # Stop processor if running
+        if self.processor:
+            self.processor.join_wait()
 
     def cleanup(self):
         """Clean up resources"""
@@ -247,11 +293,13 @@ class MAVListener:
         server_port: int = 5566,
         auto_find_port: bool = False,
         connection_timeout: float = 5.0,
+        enable_analytics: bool = True,
     ):
         self.server_host = server_host
         self.server_port = server_port
         self.auto_find_port = auto_find_port
         self.connection_timeout = connection_timeout
+        self.enable_analytics = enable_analytics
         self.server: Optional[MAVLinkServer] = None
 
     def start_server(self):
@@ -264,6 +312,7 @@ class MAVListener:
             on_connected=self._on_drone_connected,
             on_disconnected=self._on_drone_disconnected,
             on_message_received=self._on_message_received,
+            enable_analytics=self.enable_analytics,
         )
         self.server.start()
 
@@ -307,6 +356,33 @@ class MAVListener:
             time_since_msg = time.time() - status.last_heartbeat
             logger.info(f"SYSID:{sysid:3d} | CompID:{status.compid:3d} | Messages:{status.message_count:5d} | {connection_str} (idle: {time_since_msg:.1f}s)")
 
+    def print_analytics(self, window_s: int = 1):
+        """Print analytics report"""
+        if not self.server:
+            logger.info("Server not started")
+            return
+        
+        report = self.server.get_analytics_report(window_s=window_s)
+        if not report:
+            logger.info("Analytics not available")
+            return
+        
+        logger.info(f"[*] Analytics Report ({report['window_s']}s window) - {report['total_messages_processed']} msgs")
+        
+        # Traffic
+        traffic = report['traffic']
+        logger.info(f"Traffic: {traffic['msg_rate']:.1f} msg/s | {traffic['bytes_rate']:.0f} bytes/s | Types: {traffic['unique_msg_types']}")
+        
+        # Latency
+        latency = report['latency']
+        imt = latency['inter_message_time_ms']
+        logger.info(f"Latency: mean={imt['mean']:.2f}ms stdev={imt['stdev']:.2f}ms p95={imt['p95']:.2f}ms p99={imt['p99']:.2f}ms")
+        
+        # Loss
+        loss = report['loss']
+        logger.info(f"Loss: {loss['total_lost']} msgs lost ({loss['loss_rate_pct']:.4f}%)")
+        logger.info(f"{'='*70}\n")
+
     def stop_server(self):
         """Stop the server"""
         if self.server:
@@ -316,30 +392,25 @@ class MAVListener:
 def main():
     """Main function - runs the MAVLink server"""
     parser = argparse.ArgumentParser(
-        description='MAVLink Server - UDP listener for drone telemetry with disconnection detection',
+        description='MAVLink Server - UDP listener for drone telemetry with analytics',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single instance on default port 5566
-  python mav_server_refactored_fixed.py
+  # Run with analytics enabled (default)
+  python mav_server_simple.py
   
-  # With custom timeout (default 5s)
-  python mav_server_refactored_fixed.py --timeout 10
+  # Disable analytics
+  python mav_server_simple.py --no-analytics
   
   # With custom port
-  python mav_server_refactored_fixed.py --port 5577
+  python mav_server_simple.py --port 5577
   
-  # With auto port detection
-  python mav_server_refactored_fixed.py --auto-port
+  # With custom timeout
+  python mav_server_simple.py --timeout 10
   
-  # Custom host
-  python mav_server_refactored_fixed.py --host 192.168.1.100 --port 5566
-  
-  # Test with multiple SITL instances:
-  # Terminal 1: python mav_server_refactored_fixed.py --timeout 3
+  # Test with SITL:
+  # Terminal 1: python mav_server_simple.py
   # Terminal 2: sim_vehicle.py -v ArduCopter -I 1 --sysid 1 --out 127.0.0.1:5566
-  # Terminal 3: sim_vehicle.py -v ArduCopter -I 2 --sysid 2 --out 127.0.0.1:5566
-  # Stop a drone (Ctrl+C) to see disconnection detection
         """
     )
     parser.add_argument(
@@ -364,6 +435,11 @@ Examples:
         '--auto-port',
         action='store_true',
         help='Automatically find available port'
+    )
+    parser.add_argument(
+        '--no-analytics',
+        action='store_true',
+        help='Disable analytics engine'
     )
     parser.add_argument(
         '--instance-id',
@@ -394,8 +470,10 @@ Examples:
         level="INFO"
     )
     
+    analytics_status = "ENABLED" if not args.no_analytics else "DISABLED"
     logger.info(f"Starting MAVLink Server - Instance ID: {args.instance_id or 'default'}")
     logger.info(f"Configuration: {args.host}:{args.port} (auto_port={args.auto_port}, timeout={args.timeout}s)")
+    logger.info(f"Analytics: {analytics_status}")
     
     try:
         listener = MAVListener(
@@ -403,6 +481,7 @@ Examples:
             server_port=args.port,
             auto_find_port=args.auto_port,
             connection_timeout=args.timeout,
+            enable_analytics=not args.no_analytics,
         )
         listener.start_server()
         
@@ -415,16 +494,29 @@ Examples:
             logger.error("Server failed to start")
             return
 
-        # [Optional] Keep running and print status
-        """
+        # Print status and analytics every 5 seconds
+        print_interval = 5
+        last_print = time.time()
+        
+        logger.info("Starting periodic reporting (every 5 seconds)...")
+        
         while True:
-            time.sleep(3)
-            listener.print_status()
-        """    
+            time.sleep(1)
+            current_time = time.time()
+            
+            if current_time - last_print >= print_interval:
+                logger.info("")  # Blank line
+                listener.print_status()
+                
+                if not args.no_analytics:
+                    listener.print_analytics(window_s=1)
+                
+                last_print = current_time
 
     except KeyboardInterrupt:
-        logger.info("Shutting down...")
+        logger.info("\nShutting down...")
         listener.stop_server()
+        logger.success("Server stopped cleanly")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
 

@@ -2,10 +2,14 @@ import sys
 import time
 import threading
 import enum
-from pymavlink import mavutil
 import pymavlink.dialects.v20.all as dialect
+
+from typing import Dict
+from pymavlink import mavutil
 from datetime import datetime
 from loguru import logger
+
+from gps_state_tracker import GPSStateTracker
 
 # Configure loguru logger for console output only
 logger.remove()  # Remove default sink
@@ -96,6 +100,20 @@ class DroneNode:
         }
         self.tracking = False
         self.tracker_thread = None
+        
+        # [Optional] This is NOT NECESSARY class for control unit
+        # GPS state tracking variables
+        self.gps_lock = threading.Lock()
+        self.latest_gps_state = {
+            'latitude': None,
+            'longitude': None,
+            'altitude': None,
+            'eph': None,
+            'epv': None,
+            'satellites_visible': None,
+            'timestamp': None
+        }
+        self.gps_tracker = GPSStateTracker(self, interval=1)
 
     def start_status_tracking(self):
         """Start the background status tracking thread"""
@@ -157,6 +175,14 @@ class DroneNode:
                             heading = msg.hdg / 100.0 if msg.hdg > 360 else msg.hdg  # Convert if needed
                             self.current_status['heading'] = heading
                             logger.debug(f"Updated heading from GLOBAL_POSITION_INT: {heading}°")
+                        
+                        with self.gps_lock:
+                            self.latest_gps_state.update({
+                                'latitude': msg.lat / 1e7,
+                                'longitude': msg.lon / 1e7,
+                                'altitude': msg.relative_alt / 1000,
+                                'timestamp': datetime.now()
+                            })
 
                     elif msg_type == 'VFR_HUD':
                         self.current_status['groundspeed'] = msg.groundspeed
@@ -167,6 +193,16 @@ class DroneNode:
                             'fix_type': msg.fix_type,
                             'satellites_visible': msg.satellites_visible
                         }
+
+                        with self.gps_lock:
+                            self.latest_gps_state.update({
+                                'eph': msg.eph,  # Horizontal error in centimeters(HDOP)
+                                'epv': msg.epv,  # Vertical error in centimeters(VDOP)
+                                'satellites_visible': msg.satellites_visible,
+                                'timestamp': datetime.now()
+                            })
+                            logger.debug(f"GPS_RAW_INT: EPH={msg.eph/100.0:.2f}m, "
+                                       f"EPV={msg.epv/100.0:.2f}m, Sats={msg.satellites_visible}")
 
                     elif msg_type == 'SYS_STATUS':
                         battery_remaining = msg.battery_remaining if hasattr(msg, 'battery_remaining') else None
@@ -238,6 +274,36 @@ class DroneNode:
         time.sleep(0.5)
         
         return True
+
+    def start_gps_tracking(self) -> bool:
+        """
+        Start GPS state tracking
+        
+        Returns:
+            bool: True if tracking started, False otherwise
+        """
+        return self.gps_tracker.start_tracking()
+
+    def stop_gps_tracking(self) -> bool:
+        """
+        Stop GPS state tracking
+        
+        Returns:
+            bool: True if tracking stopped, False otherwise
+        """
+        return self.gps_tracker.stop_tracking()
+
+    def get_gps_statistics(self) -> Dict:
+        """
+        Get GPS state tracking statistics
+        
+        Returns:
+            dict: Statistics including min/max/avg values
+        """
+        return self.gps_tracker.get_statistics()
+
+    def export_gps_state(self, filepath) -> bool:
+        return self.gps_tracker.export_to_csv(filepath)
 
     def arm(self):
         """
@@ -856,17 +922,48 @@ class DroneNode:
             self.drone.close()
             logger.info("Drone connection closed")
 
-""""
-Test
 
 if __name__ == "__main__":
-    drone = DroneNode("udp:172.21.128.1:14550")
-    drone.connect()
-    drone.set_flight_mode(FlightMode.GUIDED)
-
+    drone = DroneNode("udp:192.168.3.158:14550")
+    # drone = DroneNode("udp:172.21.128.1:5566")
+    
+    if not drone.connect():
+        logger.error("Failed to connect to drone")
+        exit(1)
+    
+    # Start GPS tracking after connection
+    drone.start_gps_tracking()
+    logger.info("GPS state tracking started")
+    
     try:
-        while True:
-            print(drone.activate)
+        # Keep tracking while drone is active
+        while drone.tracking:
+            time.sleep(1)
     except KeyboardInterrupt:
-        exit(-1)
-        """
+        logger.warning("Tracking interrupted by user (Ctrl+C)")
+    
+    except Exception as e:
+        logger.error(f"Error during tracking: {str(e)}")
+    
+    finally:
+        # Always stop tracking and export data
+        logger.info("Stopping GPS tracking...")
+        drone.stop_gps_tracking()
+        
+        # Get statistics
+        stats = drone.get_gps_statistics()
+        logger.info(f"GPS Statistics: {stats}")
+        logger.info(f"Total samples recorded: {stats.get('total_samples', 0)}")
+        logger.info(f"Flight duration: {stats.get('duration_seconds', 0):.1f}s")
+        
+        # Export GPS state data
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filepath = f"flight_gps_state-{timestamp}.csv"
+        if drone.export_gps_state(filepath):
+            logger.success(f"GPS data exported to {filepath}")
+        else:
+            logger.error("Failed to export GPS data")
+        
+        # Cleanup
+        drone.cleanup()
+        logger.success("Program complete")

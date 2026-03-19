@@ -2,7 +2,7 @@
 import time
 import statistics
 from collections import deque
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from loguru import logger
 

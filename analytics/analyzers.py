@@ -2,8 +2,8 @@ from typing import Dict, List, Tuple
 from loguru import logger
 from collections import defaultdict
 
-from analytics.window import WindowManager
-from analytics.models import DroneMetrics, MessageTypeMetrics
+from .window import WindowManager
+from .models import DroneMetrics, MessageTypeMetrics
 from capture.message import CapturedMessage
 
 

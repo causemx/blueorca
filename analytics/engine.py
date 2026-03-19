@@ -3,7 +3,7 @@ from typing import List, Dict
 from loguru import logger
 
 from capture.message import CapturedMessage
-from analytics.analyzers import TrafficAnalyzer, LatencyAnalyzer, MessageLossDetector
+from .analyzers import TrafficAnalyzer, LatencyAnalyzer, MessageLossDetector
 
 class NetworkAnalyticsEngine:
     def __init__(self, windows: List[int] = None):
