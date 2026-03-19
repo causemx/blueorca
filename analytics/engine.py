@@ -29,13 +29,21 @@ class NetworkAnalyticsEngine:
         for message in msgs:
             self.process_message(message)
     
-    def get_report(self, window_s=1) -> Dict:
+    def get_report_summary(self, window_s=1) -> Dict:
+        """Get total network analytic summary
+
+        Args:
+            window_s (int, optional): _description_. Defaults to 1.
+
+        Returns:
+            Dict: _description_
+        """
         current_time_us = time.time_ns() // 1000
         elapsed_s = (current_time_us - self._start_time_us) / 1_000_000
         
-        traffic_summary = self.traffic_analyzer.get_summary(window_s=window_s)
-        latency_summary = self.latency_analyzer.get_summary(window_s=window_s)
-        loss_summary = self.message_loss_detector.get_summary()
+        traffic_summary = self.traffic_analyzer.get_global_summary(window_s=window_s)
+        latency_summary = self.latency_analyzer.get_global_summary(window_s=window_s)
+        loss_summary = self.message_loss_detector.get_global_summary()
         
         return {
             'timestamp_us': current_time_us,
@@ -46,6 +54,65 @@ class NetworkAnalyticsEngine:
             'latency': latency_summary,
             'loss': loss_summary,
         }
+
+    def get_per_drone_report(self, sysid:int, window_s:int = 1) -> Dict:
+        """Get report of per drone
+
+        Args:
+            sysid (int): drone's sysid
+            window_s (int, optional): default window size. Defaults to 1.
+
+        Returns:
+            Dict: _description_
+        """
+        # Get per-drone traffic
+        per_drone_traffic = self.traffic_analyzer.get_per_drone_summary()
+        drone_traffic = per_drone_traffic.get(sysid, {})
+        
+        # Get per-drone loss
+        per_drone_loss = self.message_loss_detector.get_per_drone_loss()
+        drone_loss = per_drone_loss.get(sysid, {})
+        
+        # Calculate per-drone latency (need to track per drone separately)
+        per_drone_latency = self._get_per_drone_latency(sysid)
+        
+        return {
+            'timestamp_us': time.time_ns() // 1000,
+            'sysid': sysid,
+            'window_s': window_s,
+            
+            'traffic': {
+                'message_count': drone_traffic.get('message_count', 0),
+                'bytes_received': drone_traffic.get('bytes_received', 0),
+                'last_seen_us': drone_traffic.get('last_seen_us', 0),
+            },
+            
+            'latency': per_drone_latency,
+            
+            'loss': {
+                'received': drone_loss.get('received', 0),
+                'lost': drone_loss.get('lost', 0),
+                'loss_rate_pct': drone_loss.get('loss_rate_pct', 0.0),
+                'loss_events': drone_loss.get('loss_events', 0),
+            },
+        }
+
+    def _get_per_drone_latency(self, sysid: int) -> Dict:
+        latency_summary = self.latency_analyzer.get_global_summary(window_s=1)
+        return latency_summary.get('inter_message_time_ms', {})
+
+    def get_all_drones_report(self, window_s: int = 1) -> Dict[int, Dict]:
+        """Get collapse network analytic report
+
+        Returns:
+            Dict[int, Dict]: _description_
+        """
+        result = {}
+        per_drone_traffic = self.traffic_analyzer.get_per_drone_summary()
+
+        for sysid in per_drone_traffic.keys():
+            result[sysid] = self.get_per_drone_report(sysid)
+        return result
 
     def reset(self) -> None:
         self.traffic_analyzer = TrafficAnalyzer(self.windows)

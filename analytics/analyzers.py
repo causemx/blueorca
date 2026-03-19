@@ -70,7 +70,7 @@ class TrafficAnalyzer:
         drone.bytes_received += msg.payload_len
         drone.last_timestamp_us = timestamp_us
     
-    def get_summary(self, window_s: int = 1) -> Dict:
+    def get_global_summary(self, window_s: int = 1) -> Dict:
         """Get traffic summary for specific window"""
         msg_stats = self._msg_count_window.get_stats(window_s=window_s)
         bytes_stats = self._bytes_window.get_stats(window_s=window_s)
@@ -178,7 +178,7 @@ class LatencyAnalyzer:
         
         self._msg_type_last_seen[msg_name] = timestamp_us
     
-    def get_summary(self, window_s: int = 1) -> Dict:
+    def get_global_summary(self, window_s: int = 1) -> Dict:
         """Get latency summary for specific window"""
         imt_stats = self._imt_window.get_stats(window_s=window_s)
         
@@ -301,7 +301,7 @@ class MessageLossDetector:
         
         self._msg_type_last_seq[key] = msg_seq
     
-    def get_summary(self) -> Dict:
+    def get_global_summary(self) -> Dict:
         """Get loss detection summary"""
         loss_rate = 0.0
         if self._total_messages > 0:

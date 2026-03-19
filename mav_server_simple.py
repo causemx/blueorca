@@ -257,9 +257,21 @@ class MAVLinkServer(threading.Thread):
         return self.drones.copy()
     
     def get_analytics_report(self, window_s: int = 1) -> Optional[Dict]:
-        """Get current analytics report"""
+        """Get global analytics report (all drones combined)"""
         if self.analytics:
-            return self.analytics.get_report(window_s=window_s)
+            return self.analytics.get_report_summary(window_s=window_s)
+        return None
+
+    def get_per_drone_analytics(self, sysid: int, window_s: int = 1) -> Optional[Dict]:
+        """Get analytics report for specific drone"""
+        if self.analytics:
+            return self.analytics.get_per_drone_report(sysid, window_s=window_s)
+        return None
+    
+    def get_all_drones_analytics(self, window_s: int = 1) -> Optional[Dict]:
+        """Get analytics reports for all drones"""
+        if self.analytics:
+            return self.analytics.get_all_drones_report(window_s)
         return None
 
     def stop(self):
@@ -352,12 +364,12 @@ class MAVListener:
         logger.info(f"Connected Drones: {connected_count}/{len(drones)}")
         
         for sysid, status in sorted(drones.items()):
-            connection_str = "✓ CONNECTED" if status.connected else "✗ DISCONNECTED"
+            connection_str = "+ CONNECTED" if status.connected else "- DISCONNECTED"
             time_since_msg = time.time() - status.last_heartbeat
             logger.info(f"SYSID:{sysid:3d} | CompID:{status.compid:3d} | Messages:{status.message_count:5d} | {connection_str} (idle: {time_since_msg:.1f}s)")
 
-    def print_analytics(self, window_s: int = 1):
-        """Print analytics report"""
+    def print_global_analytics(self, window_s: int = 1):
+        """Print global analytics (all drones combined)"""
         if not self.server:
             logger.info("Server not started")
             return
@@ -367,21 +379,51 @@ class MAVListener:
             logger.info("Analytics not available")
             return
         
-        logger.info(f"[*] Analytics Report ({report['window_s']}s window) - {report['total_messages_processed']} msgs")
+        logger.info(f"GLOBAL ANALYTICS ({report['window_s']}s window) - Total: {report['total_messages_processed']} msgs")
         
         # Traffic
-        traffic = report['traffic']
-        logger.info(f"Traffic: {traffic['msg_rate']:.1f} msg/s | {traffic['bytes_rate']:.0f} bytes/s | Types: {traffic['unique_msg_types']}")
+        traffic = report.get('traffic', {})
+        logger.info(f"Traffic: {traffic.get('msg_rate', 0):.1f} msg/s | {traffic.get('bytes_rate', 0):.0f} bytes/s | {traffic.get('unique_drones', 0)} drones")
         
         # Latency
-        latency = report['latency']
-        imt = latency['inter_message_time_ms']
-        logger.info(f"Latency: mean={imt['mean']:.2f}ms stdev={imt['stdev']:.2f}ms p95={imt['p95']:.2f}ms p99={imt['p99']:.2f}ms")
+        latency = report.get('latency', {})
+        imt = latency.get('inter_message_time_ms', {})
+        logger.info(f"Latency: mean={imt.get('mean', 0):.2f}ms | stdev={imt.get('stdev', 0):.2f}ms")
         
         # Loss
-        loss = report['loss']
-        logger.info(f"Loss: {loss['total_lost']} msgs lost ({loss['loss_rate_pct']:.4f}%)")
-        logger.info(f"{'='*70}\n")
+        loss = report.get('loss', {})
+        logger.info(f"Loss: {loss.get('total_lost', 0)} msgs | Rate: {loss.get('loss_rate_pct', 0):.4f}% | Events: {loss.get('loss_events_count', 0)}")
+        
+
+    def print_per_drone_analytics(self, window_s: int = 1):
+        """Print detailed per-drone analytics"""
+        if not self.server:
+            logger.info("Server not started")
+            return
+        
+        all_drones_report = self.server.get_all_drones_analytics(window_s=window_s)
+        if not all_drones_report:
+            logger.info("Per-drone analytics not available")
+            return
+        
+        logger.info(f"PER-DRONE ANALYTICS ({window_s}s window)")
+        
+        # Print comparison table
+        logger.info("Dumpping analytics:")
+        logger.info(f"{'SYSID':<8} {'Messages':<12} {'Bytes':<12} {'Loss Rate':<12} {'Latency (ms)':<15}")
+        
+        for sysid, report in sorted(all_drones_report.items()):
+            traffic = report.get('traffic', {})
+            loss = report.get('loss', {})
+            latency = report.get('latency', {})
+            
+            msg_count = traffic.get('message_count', 0)
+            bytes_count = traffic.get('bytes_received', 0)
+            loss_rate = loss.get('loss_rate_pct', 0.0)
+            latency_mean = latency.get('mean_ms', 0) if latency else 0
+            
+            logger.info(f"{sysid:<8} {msg_count:<12} {bytes_count:<12} {loss_rate:<12.4f} {latency_mean:<15.2f}")
+    
 
     def stop_server(self):
         """Stop the server"""
@@ -495,10 +537,10 @@ Examples:
             return
 
         # Print status and analytics every 5 seconds
-        print_interval = 5
+        print_interval = 3
         last_print = time.time()
         
-        logger.info("Starting periodic reporting (every 5 seconds)...")
+        logger.info("Starting periodic reporting (every 3 seconds)...")
         
         while True:
             time.sleep(1)
@@ -509,7 +551,8 @@ Examples:
                 listener.print_status()
                 
                 if not args.no_analytics:
-                    listener.print_analytics(window_s=1)
+                    listener.print_per_drone_analytics()
+                    # listener.print_global_analytics()
                 
                 last_print = current_time
 
