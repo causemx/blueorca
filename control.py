@@ -924,7 +924,7 @@ class DroneNode:
 
 
 if __name__ == "__main__":
-    drone = DroneNode("udp:192.168.3.158:14550")
+    drone = DroneNode("udp:192.168.3.158:5566")
     # drone = DroneNode("udp:172.21.128.1:5566")
     
     if not drone.connect():
