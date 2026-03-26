@@ -332,22 +332,22 @@ class AttitudeIndicator(QWidget):
         )
         
         # Draw altitude value in center
-        painter.setPen(QPen(Qt.white, 2))
-        painter.setFont(QFont("Arial", 9, QFont.Bold))
+        painter.setPen(QPen(Qt.green, 2))
+        painter.setFont(QFont("Arial", 8))
         altitude_text = f"{int(self.altitude)}m"
         painter.drawText(
-            int(center_x - 28), int(center_y - 30),
+            int(center_x - 28), int(center_y - 20),
             56, 20,
             Qt.AlignCenter,
             altitude_text
         )
         
         # Draw ground speed value below altitude
-        painter.setPen(QPen(Qt.white, 2))
-        painter.setFont(QFont("Arial", 8, QFont.Bold))
+        painter.setPen(QPen(Qt.green, 2))
+        painter.setFont(QFont("Arial", 8))
         speed_text = f"{self.ground_speed:.1f}m/s"
         painter.drawText(
-            int(center_x - 28), int(center_y + 5),
+            int(center_x - 28), int(center_y),
             56, 20,
             Qt.AlignCenter,
             speed_text

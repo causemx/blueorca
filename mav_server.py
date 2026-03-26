@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-PyQt5 Dashboard for MAVLink Server with PyMAVLink Packet Parsing
+PyQt5 Dashboard for MAVLink Server with PyMAVLink Packet Parsing and Analytics Charts
+WITH INTEGRATED NETWORK ANALYTICS ENGINE AND LINE CHARTS
 Fixed: Uses sysid as unique identifier to prevent duplicate drone cards
 """
 
@@ -11,18 +12,26 @@ import time
 from datetime import datetime
 from typing import Dict
 from dataclasses import dataclass, field
+from collections import deque
 
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QGridLayout, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, QLineEdit
+    QLabel, QFrame, QGridLayout, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, 
+    QLineEdit, QTabWidget, QPushButton, QTableWidget, QTableWidgetItem
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPainter
+from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
 
 # Import the AttitudeIndicator widget
 from widgets import AttitudeIndicator
+
+# ===== NEW IMPORTS FOR ANALYTICS =====
+from analytics.engine import NetworkAnalyticsEngine
+from capture.message import CapturedMessage
+# =====================================
 
 
 @dataclass
@@ -68,6 +77,10 @@ class DroneStatusSignal(QObject):
     drone_disconnected = pyqtSignal(int)         # sysid
     drone_message_received = pyqtSignal(int, DroneStatus)  # sysid, status
     status_updated = pyqtSignal(int, DroneStatus)
+    
+    # ===== NEW SIGNAL FOR ANALYTICS =====
+    analytics_updated = pyqtSignal(dict)  # Emits {report_dict}
+    # ====================================
 
 
 class MAVLinkServerThread(threading.Thread):
@@ -84,6 +97,11 @@ class MAVLinkServerThread(threading.Thread):
         self.parsers = {}  # {(ip, port): MAVLink parser}
         self.signal_emitter = DroneStatusSignal()
         
+        # ===== NEW: ANALYTICS ENGINE INITIALIZATION =====
+        self.analytics_engine = NetworkAnalyticsEngine(windows=[1, 10, 60])
+        self.analytics_lock = threading.Lock()
+        # ================================================
+        
     def run(self):
         """Start the server"""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -95,6 +113,15 @@ class MAVLinkServerThread(threading.Thread):
             self.socket.bind((self.host, self.port))
             self.running = True
             print(f"✓ MAVLink Server started on {self.host}:{self.port}")
+            
+            # ===== NEW: START ANALYTICS THREAD =====
+            self.analytics_thread = threading.Thread(
+                target=self._analytics_loop,
+                daemon=True
+            )
+            self.analytics_thread.start()
+            # ========================================
+            
         except OSError as e:
             print(f"✗ Error: Cannot bind to {self.host}:{self.port}: {e}")
             return
@@ -127,10 +154,39 @@ class MAVLinkServerThread(threading.Thread):
                 msg = parser.parse_char(bytes([byte]))
                 
                 if msg:
-                    # Got a complete MAVLink message
+                    # ===== NEW: GET HIGH-RESOLUTION TIMESTAMPS =====
+                    capture_time_ns = int(time.time_ns())
+                    capture_time_us = int(time.time() * 1e6)
+                    
+                    # Extract message metadata
                     sysid = msg.get_srcSystem()
                     compid = msg.get_srcComponent()
                     msg_type = msg.get_type()
+                    msg_id = msg.get_msgId()
+                    
+                    # Extract sequence number (if available)
+                    msg_seq = 0
+                    if hasattr(msg, 'seq'):
+                        msg_seq = msg.seq
+                    
+                    # CREATE CapturedMessage FOR ANALYTICS
+                    captured = CapturedMessage(
+                        timestamp_ns=capture_time_ns,
+                        timestamp_us=capture_time_us,
+                        src_addr=addr,
+                        src_sysid=sysid,
+                        src_compid=compid,
+                        msg_id=msg_id,
+                        msg_name=msg_type,
+                        msg_seq=msg_seq,
+                        payload_len=len(data),
+                        raw_bytes=data,
+                    )
+                    
+                    # FEED TO ANALYTICS ENGINE (THREAD-SAFE)
+                    with self.analytics_lock:
+                        self.analytics_engine.process_message(captured)
+                    # ==========================================
                     
                     # Check if this is a new drone (by sysid, not addr)
                     if sysid not in self.drones:
@@ -236,14 +292,10 @@ class MAVLinkServerThread(threading.Thread):
             pass
     
     def _parse_gps(self, status, msg):
-        """Parse GPS_RAW_INT message
-        
-        GPS_RAW_INT altitude is in millimeters above mean sea level
-        """
+        """Parse GPS_RAW_INT message"""
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            # Convert from millimeters to meters
             status.altitude = msg.alt / 1000.0
             status.gps_fix = msg.fix_type
             status.gps_satellites = msg.satellites_visible
@@ -251,31 +303,23 @@ class MAVLinkServerThread(threading.Thread):
             print(f"Error parsing GPS: {e}")
     
     def _parse_global_position(self, status, msg):
-        """Parse GLOBAL_POSITION_INT message
-        
-        GLOBAL_POSITION_INT altitude is in millimeters above mean sea level
-        """
+        """Parse GLOBAL_POSITION_INT message"""
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            # GLOBAL_POSITION_INT altitude is in millimeters, convert to meters
             status.altitude = msg.alt / 1000.0
             status.groundspeed = (msg.vx**2 + msg.vy**2)**0.5 / 100.0
             status.heading = msg.hdg / 100.0
         except Exception as e:
-            print(f"Error parsing GLOBAL_POSITION: {e}, raw alt value: {msg.alt}")
+            print(f"Error parsing GLOBAL_POSITION: {e}")
     
     def _parse_vfr_hud(self, status, msg):
-        """Parse VFR_HUD message
-        
-        VFR_HUD altitude is already in meters
-        """
+        """Parse VFR_HUD message"""
         try:
             status.groundspeed = msg.groundspeed
-            # VFR_HUD altitude is already in meters
             status.altitude = msg.alt
             status.heading = msg.heading
-            status.vertical_speed = msg.climb  # Climb rate in m/s
+            status.vertical_speed = msg.climb
         except Exception as e:
             print(f"Error parsing VFR_HUD: {e}")
     
@@ -308,7 +352,26 @@ class MAVLinkServerThread(threading.Thread):
                 del self.parsers[status.addr]
             
             self.signal_emitter.drone_disconnected.emit(sysid)
-            print(f"✗ DRONE DISCONNECTED: SysID {sysid} ({status.addr[0]}:{status.addr[1]}), Messages: {status.message_count}")
+            print(f"✗ DRONE DISCONNECTED: SysID {sysid} ({status.addr[0]}:{status.addr[1]})")
+    
+    # ===== NEW: ANALYTICS LOOP METHOD =====
+    def _analytics_loop(self):
+        """Periodic analytics reporter (every 500ms)"""
+        print("✓ Analytics thread started")
+        while self.running:
+            try:
+                # Get metrics with thread-safe lock
+                with self.analytics_lock:
+                    report = self.analytics_engine.get_report_summary(window_s=1)
+                
+                # Emit signal to UI
+                self.signal_emitter.analytics_updated.emit(report)
+                
+                # Update every 500ms
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Analytics update error: {e}")
+    # ======================================
     
     def stop(self):
         """Stop the server"""
@@ -455,11 +518,11 @@ class DroneCard(QFrame):
         """Update card style based on selection"""
         if self.selected:
             self.setStyleSheet(
-                "QFrame { border: 3px solid #4499FF; background-color: #1A1A2E; border-radius: 5px; }"
+                "QFrame { border: 3px solid #4499FF; background-color: #ded5d6; border-radius: 5px; }"
             )
         else:
             self.setStyleSheet(
-                "QFrame { border: 2px solid #444444; background-color: #0F0F1E; border-radius: 5px; }"
+                "QFrame { border: 2px solid #444444; background-color: #ded5d6; border-radius: 5px; }"
             )
     
     def mousePressEvent(self, event):
@@ -674,10 +737,9 @@ class DetailTab(QWidget):
         altitude_item.setFont(0, altitude_font)
         altitude_item.setFont(1, altitude_font)
         
-        # Absolute altitude (from barometer, relative to sea level)
         QTreeWidgetItem(altitude_item, ["Absolute Altitude", f"{status.altitude:.2f}m"])
         
-        # Relative altitude (above reference point - like home point)
+        # Relative altitude
         ref_alt = 0.0
         if self.overview_tab:
             try:
@@ -694,11 +756,11 @@ class DetailTab(QWidget):
         altitude_status = "Valid" if status.altitude > 0 else "No Data"
         QTreeWidgetItem(altitude_item, ["Altitude Status", altitude_status])
         
-        # Altitude in feet (for reference)
-        altitude_feet = status.altitude * 3.28084  # meters to feet conversion
+        # Altitude in feet
+        altitude_feet = status.altitude * 3.28084
         QTreeWidgetItem(altitude_item, ["Altitude (Feet)", f"{altitude_feet:.2f}ft"])
         
-        # Vertical Speed / Climb Rate
+        # Vertical Speed
         climb_direction = "↑ Climbing" if status.vertical_speed > 0.1 else "↓ Descending" if status.vertical_speed < -0.1 else "→ Level"
         QTreeWidgetItem(altitude_item, ["Climb Rate", f"{status.vertical_speed:.2f}m/s {climb_direction}"])
         
@@ -712,7 +774,6 @@ class DetailTab(QWidget):
         speed_item.setFont(1, speed_font)
         
         QTreeWidgetItem(speed_item, ["Ground Speed (m/s)", f"{status.groundspeed:.2f}"])
-        # Convert ground speed to km/h and knots for reference
         speed_kmh = status.groundspeed * 3.6
         speed_knots = status.groundspeed * 1.94384
         QTreeWidgetItem(speed_item, ["Ground Speed (km/h)", f"{speed_kmh:.2f}"])
@@ -756,6 +817,287 @@ class DetailTab(QWidget):
         return gps_fix_names.get(fix_type, f"Unknown ({fix_type})")
 
 
+# ===== NEW: ANALYTICS TAB WIDGET WITH CHARTS =====
+class AnalyticsTab(QWidget):
+    """Real-time network analytics dashboard with line charts"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_window_s = 1
+        
+        # History storage for charts (keep last 60 seconds)
+        self.traffic_history = deque(maxlen=60)
+        self.loss_history = deque(maxlen=60)
+        self.latency_history = deque(maxlen=60)
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize UI with metrics display and charts"""
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Title
+        title = QLabel("Network Analytics Dashboard")
+        title_font = QFont("Consolas", 12, QFont.Bold)
+        title.setFont(title_font)
+        main_layout.addWidget(title)
+        
+        # Window selector buttons
+        window_layout = QHBoxLayout()
+        self.window_buttons = {}
+        for window_s in [1, 10, 60]:
+            btn = QPushButton(f"{window_s}s Window")
+            btn.clicked.connect(lambda checked, w=window_s: self.set_window(w))
+            btn.setMaximumWidth(120)
+            self.window_buttons[window_s] = btn
+            window_layout.addWidget(btn)
+        window_layout.addStretch()
+        main_layout.addLayout(window_layout)
+        
+        # ===== METRICS SECTION =====
+        # Analytics grid (3 columns)
+        grid_layout = QGridLayout()
+        grid_layout.setSpacing(10)
+        
+        # Row 0: TRAFFIC TITLE
+        traffic_title = QLabel("Traffic Metrics")
+        traffic_font = QFont("Consolas", 10, QFont.Bold)
+        traffic_title.setFont(traffic_font)
+        grid_layout.addWidget(traffic_title, 0, 0, 1, 3)
+        
+        # Row 1: TRAFFIC METRICS
+        self.msg_rate_label = QLabel("Message Rate: -- msg/s")
+        self.bytes_rate_label = QLabel("Bytes Rate: -- bytes/s")
+        self.msg_type_label = QLabel("Message Types: --")
+        
+        metric_font = QFont("Consolas", 9)
+        for label in [self.msg_rate_label, self.bytes_rate_label, self.msg_type_label]:
+            label.setFont(metric_font)
+        
+        grid_layout.addWidget(self.msg_rate_label, 1, 0)
+        grid_layout.addWidget(self.bytes_rate_label, 1, 1)
+        grid_layout.addWidget(self.msg_type_label, 1, 2)
+        
+        # Row 2: LATENCY TITLE
+        latency_title = QLabel("Latency Metrics (Inter-Message Time)")
+        latency_font = QFont("Consolas", 10, QFont.Bold)
+        latency_title.setFont(latency_font)
+        grid_layout.addWidget(latency_title, 2, 0, 1, 3)
+        
+        # Row 3: LATENCY METRICS
+        self.imt_mean_label = QLabel("Mean IMT: -- ms")
+        self.imt_stdev_label = QLabel("StDev IMT: -- ms")
+        self.imt_p95_label = QLabel("P95 IMT: -- ms")
+        
+        for label in [self.imt_mean_label, self.imt_stdev_label, self.imt_p95_label]:
+            label.setFont(metric_font)
+        
+        grid_layout.addWidget(self.imt_mean_label, 3, 0)
+        grid_layout.addWidget(self.imt_stdev_label, 3, 1)
+        grid_layout.addWidget(self.imt_p95_label, 3, 2)
+        
+        # Row 4: LOSS TITLE
+        loss_title = QLabel("Message Loss Detection")
+        loss_font = QFont("Consolas", 10, QFont.Bold)
+        loss_title.setFont(loss_font)
+        grid_layout.addWidget(loss_title, 4, 0, 1, 3)
+        
+        # Row 5: LOSS METRICS
+        self.loss_rate_label = QLabel("Loss Rate: -- %")
+        self.loss_count_label = QLabel("Lost Messages: --")
+        self.loss_events_label = QLabel("Loss Events: --")
+        
+        for label in [self.loss_rate_label, self.loss_count_label, self.loss_events_label]:
+            label.setFont(metric_font)
+        
+        grid_layout.addWidget(self.loss_rate_label, 5, 0)
+        grid_layout.addWidget(self.loss_count_label, 5, 1)
+        grid_layout.addWidget(self.loss_events_label, 5, 2)
+        
+        main_layout.addLayout(grid_layout)
+        
+        # ===== CHARTS SECTION =====
+        charts_title = QLabel("Historical Trends (Last 60 Seconds)")
+        charts_title_font = QFont("Consolas", 10, QFont.Bold)
+        charts_title.setFont(charts_title_font)
+        main_layout.addWidget(charts_title)
+        
+        # Create charts
+        charts_grid = QGridLayout()
+        charts_grid.setSpacing(10)
+        
+        # Traffic chart
+        self.traffic_chart_view = self.create_line_chart("Message Rate (msg/s)", "Time (s)")
+        charts_grid.addWidget(self.traffic_chart_view, 0, 0)
+        
+        # Loss chart
+        self.loss_chart_view = self.create_line_chart("Loss Rate (%)", "Time (s)")
+        charts_grid.addWidget(self.loss_chart_view, 0, 1)
+        
+        # Latency chart
+        self.latency_chart_view = self.create_line_chart("Latency (ms)", "Time (s)")
+        charts_grid.addWidget(self.latency_chart_view, 1, 0, 1, 2)
+        
+        main_layout.addLayout(charts_grid)
+        
+        self.setLayout(main_layout)
+    
+    def create_line_chart(self, title: str, x_axis: str) -> QChartView:
+        """Create a line chart view"""
+        chart = QChart()
+        chart.setTitle(title)
+        chart.setAnimationOptions(QChart.SeriesAnimations)
+        
+        # Create series
+        series = QLineSeries()
+        series.setName("Metric")
+        chart.addSeries(series)
+        
+        # X axis
+        x_axis_obj = QValueAxis()
+        x_axis_obj.setTitleText(x_axis)
+        x_axis_obj.setRange(0, 60)
+        chart.addAxis(x_axis_obj, Qt.AlignBottom)
+        series.attachAxis(x_axis_obj)
+        
+        # Y axis
+        y_axis_obj = QValueAxis()
+        y_axis_obj.setTitleText(title)
+        chart.addAxis(y_axis_obj, Qt.AlignLeft)
+        series.attachAxis(y_axis_obj)
+        
+        chart_view = QChartView(chart)
+        chart_view.setRenderHint(QPainter.Antialiasing)
+        
+        # Store references
+        if "Message Rate" in title:
+            self.traffic_series = series
+            self.traffic_y_axis = y_axis_obj
+        elif "Loss Rate" in title:
+            self.loss_series = series
+            self.loss_y_axis = y_axis_obj
+        elif "Latency" in title:
+            self.latency_series = series
+            self.latency_y_axis = y_axis_obj
+        
+        return chart_view
+    
+    def set_window(self, window_s: int):
+        """Change active window"""
+        self.current_window_s = window_s
+        # Highlight active button
+        for w, btn in self.window_buttons.items():
+            btn.setStyleSheet(
+                "background-color: #4499FF; color: white; font-weight: bold;"
+                if w == window_s else ""
+            )
+    
+    def update_analytics(self, report: dict):
+        """Update display with new analytics report"""
+        try:
+            # Extract sections
+            traffic = report.get('traffic', {})
+            latency = report.get('latency', {})
+            loss = report.get('loss', {})
+            
+            # Update traffic metrics
+            msg_rate = traffic.get('msg_rate', 0)
+            bytes_rate = traffic.get('bytes_rate', 0)
+            msg_types = traffic.get('unique_msg_types', 0)
+            
+            self.msg_rate_label.setText(f"Message Rate: {msg_rate:.1f} msg/s")
+            self.bytes_rate_label.setText(f"Bytes Rate: {bytes_rate:.0f} bytes/s")
+            self.msg_type_label.setText(f"Message Types: {msg_types}")
+            
+            # Update latency metrics
+            imt = latency.get('inter_message_time_ms', {})
+            mean_imt = imt.get('mean', 0)
+            stdev_imt = imt.get('stdev', 0)
+            p95_imt = imt.get('p95', 0)
+            
+            self.imt_mean_label.setText(f"Mean IMT: {mean_imt:.2f} ms")
+            self.imt_stdev_label.setText(f"StDev IMT: {stdev_imt:.2f} ms")
+            self.imt_p95_label.setText(f"P95 IMT: {p95_imt:.2f} ms")
+            
+            # Update loss metrics
+            loss_rate = loss.get('loss_rate_pct', 0)
+            lost_count = loss.get('total_lost', 0)
+            loss_events = loss.get('loss_events_count', 0)
+            
+            self.loss_rate_label.setText(f"Loss Rate: {loss_rate:.2f} %")
+            self.loss_count_label.setText(f"Lost Messages: {lost_count}")
+            self.loss_events_label.setText(f"Loss Events: {loss_events}")
+            
+            # Apply color coding for alerts
+            if loss_rate > 1.0:
+                self.loss_rate_label.setStyleSheet("color: #FF6666;")
+            else:
+                self.loss_rate_label.setStyleSheet("")
+            
+            if stdev_imt > 50:
+                self.imt_stdev_label.setStyleSheet("color: #FFB366;")
+            else:
+                self.imt_stdev_label.setStyleSheet("")
+            
+            # ===== UPDATE CHARTS DATA =====
+            self.update_charts_data(report)
+                
+        except Exception as e:
+            print(f"Error updating analytics: {e}")
+    
+    def update_charts_data(self, report: dict):
+        """Update chart data with new metrics"""
+        try:
+            traffic = report.get('traffic', {})
+            loss = report.get('loss', {})
+            latency = report.get('latency', {})
+            
+            msg_rate = traffic.get('msg_rate', 0.0)
+            loss_rate = loss.get('loss_rate_pct', 0.0)
+            
+            imt = latency.get('inter_message_time_ms', {})
+            latency_mean = imt.get('mean', 0.0)
+            
+            # Store in history
+            self.traffic_history.append(msg_rate)
+            self.loss_history.append(loss_rate)
+            self.latency_history.append(latency_mean)
+            
+            # Update traffic series
+            self.traffic_series.clear()
+            for i, value in enumerate(self.traffic_history):
+                self.traffic_series.append(i, value)
+            
+            # Update loss series
+            self.loss_series.clear()
+            for i, value in enumerate(self.loss_history):
+                self.loss_series.append(i, value)
+            
+            # Update latency series
+            self.latency_series.clear()
+            for i, value in enumerate(self.latency_history):
+                self.latency_series.append(i, value)
+            
+            # Auto-scale Y axes
+            if self.traffic_history:
+                max_traffic = max(self.traffic_history) if self.traffic_history else 100
+                self.traffic_y_axis.setRange(0, max(100, max_traffic * 1.2))
+            
+            if self.loss_history and any(self.loss_history):
+                max_loss = max(self.loss_history)
+                self.loss_y_axis.setRange(0, max(1, max_loss * 1.2))
+            
+            if self.latency_history:
+                max_latency = max(self.latency_history) if self.latency_history else 100
+                self.latency_y_axis.setRange(0, max(100, max_latency * 1.2))
+        
+        except Exception as e:
+            print(f"Error updating charts: {e}")
+# ====================================
+
+
 class MAVLinkDashboard(QMainWindow):
     """Main dashboard window"""
     
@@ -769,31 +1111,42 @@ class MAVLinkDashboard(QMainWindow):
         self.start_server()
     
     def init_ui(self):
-        """Initialize main UI"""
+        """Initialize main UI with tabs"""
         self.setWindowTitle("MAVLink Server Dashboard (PyMAVLink)")
-        self.setGeometry(100, 100, 1600, 800)
+        self.setGeometry(100, 100, 1600, 1000)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        main_layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
         
-        # Create splitter
+        # Create main splitter (LEFT / RIGHT)
         splitter = QSplitter(Qt.Horizontal)
-        
-        # Overview and Detail tabs
+
+        # LEFT: Overview
         self.overview_tab = OverviewTab()
-        self.overview_tab.drone_selected.connect(self.on_drone_selected)
-        
-        self.detail_tab = DetailTab(overview_tab=self.overview_tab)
-        
-        # Add to splitter
         splitter.addWidget(self.overview_tab)
-        splitter.addWidget(self.detail_tab)
-        splitter.setSizes([640, 960])
-        
+
+        # RIGHT: Tabs (Detail + Analytics)
+        right_tabs = QTabWidget()
+
+        self.detail_tab = DetailTab(overview_tab=self.overview_tab)
+        self.analytics_tab = AnalyticsTab()
+
+        right_tabs.addTab(self.detail_tab, "Details")
+        right_tabs.addTab(self.analytics_tab, "Analytics")
+
+        splitter.addWidget(right_tabs)
+
+        # Optional: set initial size ratio
+        splitter.setStretchFactor(0, 2)  # Overview wider
+        splitter.setStretchFactor(1, 3)
+
         main_layout.addWidget(splitter)
+        
         central_widget.setLayout(main_layout)
+
+        self.overview_tab.drone_selected.connect(self.on_drone_selected)
     
     def start_server(self):
         """Start MAVLink server"""
@@ -803,9 +1156,12 @@ class MAVLinkDashboard(QMainWindow):
             timeout=10
         )
         
+        # ===== CONNECT SIGNALS =====
         self.server.signal_emitter.drone_connected.connect(self.on_drone_connected)
         self.server.signal_emitter.drone_disconnected.connect(self.on_drone_disconnected)
         self.server.signal_emitter.drone_message_received.connect(self.on_message_received)
+        self.server.signal_emitter.analytics_updated.connect(self.on_analytics_updated)  # NEW
+        # ===========================
         
         self.server.start()
     
@@ -862,6 +1218,12 @@ class MAVLinkDashboard(QMainWindow):
         if sysid in self.drone_statuses:
             status = self.drone_statuses[sysid]
             self.detail_tab.set_selected_drone(sysid, status)
+    
+    # ===== NEW: ANALYTICS SIGNAL HANDLER =====
+    def on_analytics_updated(self, report: dict):
+        """Handle analytics update signal from server"""
+        self.analytics_tab.update_analytics(report)
+    # ========================================
     
     def closeEvent(self, event):
         """Handle window close"""

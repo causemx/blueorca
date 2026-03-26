@@ -210,6 +210,7 @@ class GPSStateTracker:
                     if record:
                         with self.lock:
                             self.records.append(record)
+                        # TODO show satellites_visible and eph of record on 1.3 oled real-time
                         logger.info(f"GPS state record has appended: {record}")
                     last_sample_time = current_time
                     time.sleep(0.01)
