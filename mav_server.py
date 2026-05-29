@@ -518,11 +518,11 @@ class DroneCard(QFrame):
         """Update card style based on selection"""
         if self.selected:
             self.setStyleSheet(
-                "QFrame { border: 3px solid #4499FF; background-color: #ded5d6; border-radius: 5px; }"
+                "QFrame { border: 3px solid #4499FF; background-color: #edd7d5; border-radius: 5px; }"
             )
         else:
             self.setStyleSheet(
-                "QFrame { border: 2px solid #444444; background-color: #ded5d6; border-radius: 5px; }"
+                "QFrame { border: 2px solid #444444; background-color: #edd7d5; border-radius: 5px; }"
             )
     
     def mousePressEvent(self, event):
@@ -819,16 +819,18 @@ class DetailTab(QWidget):
 
 # ===== NEW: ANALYTICS TAB WIDGET WITH CHARTS =====
 class AnalyticsTab(QWidget):
-    """Real-time network analytics dashboard with line charts"""
+    """Real-time network analytics dashboard with per-drone line charts"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_window_s = 1
+        self.current_sysid = None  # ===== NEW: Track selected drone =====
         
-        # History storage for charts (keep last 60 seconds)
-        self.traffic_history = deque(maxlen=60)
-        self.loss_history = deque(maxlen=60)
-        self.latency_history = deque(maxlen=60)
+        # History storage for charts (keep last 60 seconds) - PER DRONE
+        # {sysid: deque()}
+        self.traffic_history = {}  # ===== CHANGED: Per-drone storage =====
+        self.loss_history = {}     # ===== CHANGED: Per-drone storage =====
+        self.latency_history = {}  # ===== CHANGED: Per-drone storage =====
         
         self.init_ui()
     
@@ -838,11 +840,27 @@ class AnalyticsTab(QWidget):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
         
+        # ===== NEW: TITLE WITH DRONE SELECTION =====
+        title_layout = QHBoxLayout()
+        
         # Title
-        title = QLabel("Network Analytics Dashboard")
+        title = QLabel("Per-Drone Network Analytics")
         title_font = QFont("Consolas", 12, QFont.Bold)
         title.setFont(title_font)
-        main_layout.addWidget(title)
+        title_layout.addWidget(title)
+        
+        title_layout.addStretch()
+        
+        # ===== NEW: DRONE SELECTOR LABEL =====
+        drone_label = QLabel("Selected Drone: None")
+        drone_font = QFont("Consolas", 10)
+        drone_label.setFont(drone_font)
+        drone_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+        self.drone_label = drone_label
+        title_layout.addWidget(drone_label)
+        
+        main_layout.addLayout(title_layout)
+        # =========================================
         
         # Window selector buttons
         window_layout = QHBoxLayout()
@@ -870,15 +888,15 @@ class AnalyticsTab(QWidget):
         # Row 1: TRAFFIC METRICS
         self.msg_rate_label = QLabel("Message Rate: -- msg/s")
         self.bytes_rate_label = QLabel("Bytes Rate: -- bytes/s")
-        self.msg_type_label = QLabel("Message Types: --")
+        self.msg_count_label = QLabel("Total Messages: --")  # ===== NEW =====
         
         metric_font = QFont("Consolas", 9)
-        for label in [self.msg_rate_label, self.bytes_rate_label, self.msg_type_label]:
+        for label in [self.msg_rate_label, self.bytes_rate_label, self.msg_count_label]:
             label.setFont(metric_font)
         
         grid_layout.addWidget(self.msg_rate_label, 1, 0)
         grid_layout.addWidget(self.bytes_rate_label, 1, 1)
-        grid_layout.addWidget(self.msg_type_label, 1, 2)
+        grid_layout.addWidget(self.msg_count_label, 1, 2)  # ===== NEW =====
         
         # Row 2: LATENCY TITLE
         latency_title = QLabel("Latency Metrics (Inter-Message Time)")
@@ -994,22 +1012,73 @@ class AnalyticsTab(QWidget):
                 if w == window_s else ""
             )
     
+    def set_selected_drone(self, sysid: int):
+        """Set the selected drone for analytics display"""
+        self.current_sysid = sysid
+        
+        # Initialize history for this drone if not exists
+        if sysid not in self.traffic_history:
+            self.traffic_history[sysid] = deque(maxlen=60)
+            self.loss_history[sysid] = deque(maxlen=60)
+            self.latency_history[sysid] = deque(maxlen=60)
+        
+        # Update drone label
+        self.drone_label.setText(f"Selected Drone: SysID {sysid}")
+        self.drone_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+    
+    def clear_selection(self):
+        """Clear drone selection"""
+        self.current_sysid = None
+        self.drone_label.setText("Selected Drone: None")
+        self.drone_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+        
+        # Clear all labels
+        self.msg_rate_label.setText("Message Rate: -- msg/s")
+        self.bytes_rate_label.setText("Bytes Rate: -- bytes/s")
+        self.msg_count_label.setText("Total Messages: --")
+        self.imt_mean_label.setText("Mean IMT: -- ms")
+        self.imt_stdev_label.setText("StDev IMT: -- ms")
+        self.imt_p95_label.setText("P95 IMT: -- ms")
+        self.loss_rate_label.setText("Loss Rate: -- %")
+        self.loss_count_label.setText("Lost Messages: --")
+        self.loss_events_label.setText("Loss Events: --")
+        
+        # Clear charts
+        self.traffic_series.clear()
+        self.loss_series.clear()
+        self.latency_series.clear()
+    
     def update_analytics(self, report: dict):
-        """Update display with new analytics report"""
+        """Update display with new analytics report (per-drone)"""
         try:
+            # If no drone selected, show nothing
+            if self.current_sysid is None:
+                return
+            
+            # Extract per-drone analytics
+            per_drone_reports = report.get('per_drone_reports', {})
+            
+            if self.current_sysid not in per_drone_reports:
+                return
+            
+            drone_report = per_drone_reports[self.current_sysid]
+            
             # Extract sections
-            traffic = report.get('traffic', {})
-            latency = report.get('latency', {})
-            loss = report.get('loss', {})
+            traffic = drone_report.get('traffic', {})
+            latency = drone_report.get('latency', {})
+            loss = drone_report.get('loss', {})
             
             # Update traffic metrics
-            msg_rate = traffic.get('msg_rate', 0)
-            bytes_rate = traffic.get('bytes_rate', 0)
-            msg_types = traffic.get('unique_msg_types', 0)
+            msg_count = traffic.get('message_count', 0)
+            bytes_received = traffic.get('bytes_received', 0)
             
-            self.msg_rate_label.setText(f"Message Rate: {msg_rate:.1f} msg/s")
-            self.bytes_rate_label.setText(f"Bytes Rate: {bytes_rate:.0f} bytes/s")
-            self.msg_type_label.setText(f"Message Types: {msg_types}")
+            # Calculate bytes rate (bytes received / uptime)
+            # For now, show total bytes as rate proxy
+            bytes_rate = bytes_received if bytes_received > 0 else 0
+            
+            self.msg_count_label.setText(f"Total Messages: {msg_count}")
+            self.msg_rate_label.setText(f"Bytes Total: {bytes_received} bytes")
+            self.bytes_rate_label.setText(f"Drone Status: Active")
             
             # Update latency metrics
             imt = latency.get('inter_message_time_ms', {})
@@ -1023,8 +1092,8 @@ class AnalyticsTab(QWidget):
             
             # Update loss metrics
             loss_rate = loss.get('loss_rate_pct', 0)
-            lost_count = loss.get('total_lost', 0)
-            loss_events = loss.get('loss_events_count', 0)
+            lost_count = loss.get('lost', 0)
+            loss_events = loss.get('loss_events', 0)
             
             self.loss_rate_label.setText(f"Loss Rate: {loss_rate:.2f} %")
             self.loss_count_label.setText(f"Lost Messages: {lost_count}")
@@ -1042,55 +1111,64 @@ class AnalyticsTab(QWidget):
                 self.imt_stdev_label.setStyleSheet("")
             
             # ===== UPDATE CHARTS DATA =====
-            self.update_charts_data(report)
+            self.update_charts_data(drone_report)
                 
         except Exception as e:
             print(f"Error updating analytics: {e}")
     
-    def update_charts_data(self, report: dict):
-        """Update chart data with new metrics"""
+    def update_charts_data(self, drone_report: dict):
+        """Update chart data with per-drone metrics"""
         try:
-            traffic = report.get('traffic', {})
-            loss = report.get('loss', {})
-            latency = report.get('latency', {})
+            if self.current_sysid is None:
+                return
             
-            msg_rate = traffic.get('msg_rate', 0.0)
+            traffic = drone_report.get('traffic', {})
+            loss = drone_report.get('loss', {})
+            latency = drone_report.get('latency', {})
+            
+            # Get per-drone message count as proxy for rate
+            msg_count = traffic.get('message_count', 0)
             loss_rate = loss.get('loss_rate_pct', 0.0)
             
             imt = latency.get('inter_message_time_ms', {})
             latency_mean = imt.get('mean', 0.0)
             
+            # Get history for this drone
+            traffic_hist = self.traffic_history[self.current_sysid]
+            loss_hist = self.loss_history[self.current_sysid]
+            latency_hist = self.latency_history[self.current_sysid]
+            
             # Store in history
-            self.traffic_history.append(msg_rate)
-            self.loss_history.append(loss_rate)
-            self.latency_history.append(latency_mean)
+            traffic_hist.append(float(msg_count))  # Message count as traffic indicator
+            loss_hist.append(loss_rate)
+            latency_hist.append(latency_mean)
             
             # Update traffic series
             self.traffic_series.clear()
-            for i, value in enumerate(self.traffic_history):
+            for i, value in enumerate(traffic_hist):
                 self.traffic_series.append(i, value)
             
             # Update loss series
             self.loss_series.clear()
-            for i, value in enumerate(self.loss_history):
+            for i, value in enumerate(loss_hist):
                 self.loss_series.append(i, value)
             
             # Update latency series
             self.latency_series.clear()
-            for i, value in enumerate(self.latency_history):
+            for i, value in enumerate(latency_hist):
                 self.latency_series.append(i, value)
             
             # Auto-scale Y axes
-            if self.traffic_history:
-                max_traffic = max(self.traffic_history) if self.traffic_history else 100
+            if traffic_hist:
+                max_traffic = max(traffic_hist) if traffic_hist else 100
                 self.traffic_y_axis.setRange(0, max(100, max_traffic * 1.2))
             
-            if self.loss_history and any(self.loss_history):
-                max_loss = max(self.loss_history)
+            if loss_hist and any(loss_hist):
+                max_loss = max(loss_hist)
                 self.loss_y_axis.setRange(0, max(1, max_loss * 1.2))
             
-            if self.latency_history:
-                max_latency = max(self.latency_history) if self.latency_history else 100
+            if latency_hist:
+                max_latency = max(latency_hist) if latency_hist else 100
                 self.latency_y_axis.setRange(0, max(100, max_latency * 1.2))
         
         except Exception as e:
@@ -1145,7 +1223,6 @@ class MAVLinkDashboard(QMainWindow):
         main_layout.addWidget(splitter)
         
         central_widget.setLayout(main_layout)
-
         self.overview_tab.drone_selected.connect(self.on_drone_selected)
     
     def start_server(self):
@@ -1218,12 +1295,25 @@ class MAVLinkDashboard(QMainWindow):
         if sysid in self.drone_statuses:
             status = self.drone_statuses[sysid]
             self.detail_tab.set_selected_drone(sysid, status)
+            self.analytics_tab.set_selected_drone(sysid)  # ===== NEW: Set analytics for drone =====
     
-    # ===== NEW: ANALYTICS SIGNAL HANDLER =====
+    # ===== NEW: ANALYTICS SIGNAL HANDLER WITH PER-DRONE SUPPORT =====
     def on_analytics_updated(self, report: dict):
-        """Handle analytics update signal from server"""
+        """Handle analytics update signal from server (with per-drone data)"""
+        try:
+            # Get per-drone analytics from server
+            if self.server and hasattr(self.server, 'analytics_engine'):
+                with self.server.analytics_lock:
+                    per_drone_reports = self.server.analytics_engine.get_all_drones_report(window_s=1)
+                
+                # Add per-drone reports to the main report
+                report['per_drone_reports'] = per_drone_reports
+        except Exception as e:
+            print(f"Error getting per-drone reports: {e}")
+        
+        # Update analytics tab with per-drone data
         self.analytics_tab.update_analytics(report)
-    # ========================================
+    # ================================================================
     
     def closeEvent(self, event):
         """Handle window close"""
