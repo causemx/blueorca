@@ -408,7 +408,7 @@ class DroneNode:
 
         # Create arm command message
         self.arm()
-        time.sleep(1)
+        time.sleep(0.5)
 
         # Create takeoff command message
         takeoff_message = dialect.MAVLink_command_long_message(
@@ -431,7 +431,7 @@ class DroneNode:
         logging.info(f"Takeoff attempt to {target_altitude}m")
 
         # Wait for acknowledgment
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=False, timeout=2.0)
 
         if ack and ack.command == dialect.MAV_CMD_NAV_TAKEOFF:
             success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
@@ -443,8 +443,10 @@ class DroneNode:
                 # Log the specific failure reason if available
                 result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
                 logging.warning(f"Takeoff attempt failed: {result_name}")
+                return False
         else:
             logging.warning("No acknowledgment received for takeoff attempt")
+            return False
 
     def fly_to_target(self, target_lat, target_lon, altitude) -> bool:
         try:
@@ -894,6 +896,60 @@ class DroneNode:
         except Exception as e:
             logging.error(f"Error getting flight mode: {str(e)}")
             return self.flight_mode  # Return last known mode on error
+
+    
+    def get_drone_param(self, param_name):
+        """
+        Get a drone parameter value
+        
+        Args:
+            param_name (str): Parameter name (e.g., 'WPNAV_SPEED')
+        
+        Returns:
+            float: Parameter value, or None if not found or error
+        """
+        if not self.drone:
+            return None
+
+        # Convert param_name to bytes if needed
+        if isinstance(param_name, str):
+            param_name_bytes = param_name.encode('utf-8')
+        else:
+            param_name_bytes = param_name
+
+        self.drone.mav.param_request_read_send(
+            self.drone.target_system,
+            self.drone.target_component,
+            param_name_bytes,
+            -1  # -1 means we don't know the index, search by string name
+        )
+
+        try:
+            # Wait for parameter response (timeout after 2 seconds)
+            start_time = time.time()
+            while time.time() - start_time < 2:
+                param = self.drone.recv_match(type='PARAM_VALUE', blocking=False, timeout=0.5)
+                
+                # Check if the returned parameter matches the one we requested
+                if param:
+                    # Handle param_id as bytes or string
+                    param_id = param.param_id
+                    if isinstance(param_id, bytes):
+                        param_id = param_id.decode('utf-8').strip()
+                    else:
+                        param_id = param_id.strip()
+                    
+                    if param_id == param_name:
+                        logging.debug(f"Success! {param_name} = {param.param_value}")
+                        return param.param_value
+            
+            logging.warning(f"Parameter {param_name} not found or timeout")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error reading parameter {param_name}: {str(e)}")
+            return None
+
 
     def get_drone_status(self):
         """

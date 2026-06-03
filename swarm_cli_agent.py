@@ -4,8 +4,7 @@ import time
 import cmd
 import logging
 import threading
-from typing import Dict, List, Tuple
-from datetime import datetime
+from typing import Dict, List
 from dataclasses import dataclass
 from control import DroneNode, FlightMode
 import math
@@ -46,7 +45,7 @@ class SwarmController:
         self.lock = threading.Lock()
         self.is_swarm_armed = False
         
-        logger.info(f"Initializing swarm with {len(drone_configs)} drone(s)")
+        logger.debug(f"Initializing swarm with {len(drone_configs)} drone(s)")
         
     def connect_all(self) -> bool:
         """Connect to all drones in swarm"""
@@ -155,26 +154,16 @@ class SwarmController:
             logger.error("No drones connected")
             return False
         
-        if not self.is_swarm_armed:
-            logger.error("Swarm not armed")
-            return False
-        
         logger.info(f"Taking off all drones to {altitude}m...")
         
         with self.lock:
-            success_count = 0
             for drone_id, drone in self.drones.items():
-                try:
-                    drone.arm()
-                    if drone.takeoff(altitude):
-                        logger.info(f"[OK] Drone {drone_id} taking off to {altitude}m")
-                        success_count += 1
-                    else:
-                        logger.warning(f"[FAIL] Drone {drone_id} takeoff failed")
-                except Exception as e:
-                    logger.error(f"[FAIL] Drone {drone_id} takeoff error: {str(e)}")
-            
-            return success_count == len(self.drones)
+                if drone.takeoff(altitude):
+                    logger.info(f"[OK] Drone {drone_id} taking off to {altitude}m")
+                else:
+                    logger.warning(f"[FAIL] Drone {drone_id} takeoff failed")
+
+            return True
     
     def land_all(self) -> bool:
         """Land all drones"""
@@ -187,243 +176,162 @@ class SwarmController:
         with self.lock:
             success_count = 0
             for drone_id, drone in self.drones.items():
+                if drone.land():
+                    logger.info(f"[OK] Drone {drone_id} landing")
+                    success_count += 1
+            logger.info(f"land_count: {success_count}")
+            return success_count == len(self.drones)
+    
+    def move(self, distance: float, altitude: float = None) -> bool:
+        """
+        Fly all drones forward or backward relative to current heading using fly_to_target
+        
+        Args:
+            distance: Distance to fly in meters. 
+                     Positive = move forward, Negative = move backward
+                     Example: 30 = move forward 30m, -30 = move backward 30m
+            altitude: Target altitude in meters (maintains current if None)
+        
+        Returns:
+            True if command sent successfully
+        """
+        if not self.drones:
+            logger.error("No drones connected")
+            return False
+        
+        direction = "forward" if distance >= 0 else "backward"
+        abs_distance = abs(distance)
+        logger.info(f"Flying all drones {direction} {abs_distance}m using fly_to_target...")
+        
+        with self.lock:
+            success_count = 0
+            for drone_id, drone in self.drones.items():
                 try:
-                    if drone.land():
-                        logger.info(f"[OK] Drone {drone_id} landing")
+                    # Get current drone status
+                    status = drone.get_drone_status()
+                    
+                    # Get current position
+                    current_position = status.get('position')
+                    current_heading = status.get('heading')
+                    current_altitude = status.get('altitude', 0)
+                    
+                    if current_position is None or current_heading is None:
+                        logger.warning(f"[SKIP] Drone {drone_id}: Cannot get current position or heading")
+                        continue
+                    
+                    # Use provided altitude or maintain current altitude
+                    target_altitude = altitude if altitude is not None else current_altitude
+                    
+                    # Extract current lat/lon
+                    current_lat, current_lon = current_position
+                    
+                    # Calculate target position offset based on distance and heading
+                    # Convert heading to radians
+                    heading_rad = math.radians(current_heading)
+                    
+                    # For negative distance (backward), adjust heading by 180 degrees
+                    if distance < 0:
+                        heading_rad = heading_rad + math.pi
+                    
+                    # Calculate lat/lon offset
+                    # Approximate: 1 degree latitude ≈ 111 km = 111000 meters
+                    # 1 degree longitude ≈ 111 km * cos(latitude) at the equator
+                    lat_offset = (abs_distance / 111000.0) * math.cos(heading_rad)
+                    lon_offset = (abs_distance / (111000.0 * math.cos(math.radians(current_lat)))) * math.sin(heading_rad)
+                    
+                    # Calculate target position
+                    target_lat = current_lat + lat_offset
+                    target_lon = current_lon + lon_offset
+                    
+                    # Send fly_to_target command
+                    if drone.fly_to_target(target_lat, target_lon, target_altitude):
+                        logger.info(f"[OK] Drone {drone_id}: Flying {direction} {abs_distance}m to ({target_lat:.7f}, {target_lon:.7f}) at {target_altitude}m")
                         success_count += 1
                     else:
-                        logger.warning(f"[FAIL] Drone {drone_id} land failed")
+                        logger.warning(f"[FAIL] Drone {drone_id}: fly_to_target command failed")
+                
                 except Exception as e:
-                    logger.error(f"[FAIL] Drone {drone_id} land error: {str(e)}")
+                    logger.error(f"[ERROR] Drone {drone_id}: {str(e)}")
             
-            return success_count == len(self.drones)
-    
-    def fly_to(self, distance: float, speed: float = 1.0) -> bool:
-        """
-        Fly all drones forward based on current yaw
-        
-        Args:
-            distance: Distance to fly in meters
-            speed: Flight speed in m/s (default: 1.0)
-        
-        Returns:
-            True if command sent successfully
-        """
-        if not self.drones:
-            logger.error("No drones connected")
-            return False
-        
-        
-        logger.info(f"Flying forward {distance}m at speed {speed}m/s...")
-        
-        with self.lock:
-            success_count = 0
-            for drone_id, drone in self.drones.items():
-                try:
-                    # Set GUIDED mode first
-                    drone.set_flight_mode(FlightMode.GUIDED)
-                    time.sleep(0.1)
-                    
-                    # Get current status
-                    
-                    status = drone.get_drone_status()
-                    heading = status.get('heading', 0)
-                    _altitude = status.get('altitude', 2.0)
-                    
-                    # Calculate velocity components based on heading
-                    heading_rad = math.radians(heading)
-                    vx = speed * math.cos(heading_rad)
-                    vy = speed * math.sin(heading_rad)
-                    
-                    # Send velocity target
-                    # calculate duration = distance / speed
-                    duration = distance / speed if speed > 0 else 0
-                    
-                    # Send velocity command
-                    # drone.send_velocity_target(vx, vy, 0, duration)
-                    drone.send_velocity_target(vx, vy, 0)
-                    logger.info(f"[OK] Drone {drone_id} flying forward (heading: {heading}deg, duration: {duration:.1f}s)")
-                    success_count += 1
-                except Exception as e:
-                    logger.error(f"[FAIL] Drone {drone_id} fly_to error: {str(e)}")
-            
-            return success_count == len(self.drones)
-    
-    def fly_back(self, distance: float, speed: float = 1.0) -> bool:
-        """
-        Fly all drones backward based on current yaw
-        
-        Args:
-            distance: Distance to fly backward in meters
-            speed: Flight speed in m/s (default: 1.0)
-        
-        Returns:
-            True if command sent successfully
-        """
-        if not self.drones:
-            logger.error("No drones connected")
-            return False
-        
-        if not self.is_swarm_armed:
-            logger.error("Swarm not armed")
-            return False
-        
-        logger.info(f"Flying backward {distance}m at speed {speed}m/s...")
-        
-        with self.lock:
-            success_count = 0
-            for drone_id, drone in self.drones.items():
-                try:
-                    # Set GUIDED mode first
-                    drone.set_flight_mode(FlightMode.GUIDED)
-                    time.sleep(0.1)
-                    
-                    # Get current status
-                    status = drone.get_drone_status()
-                    heading = status.get('heading', 0)
-                    
-                    # Calculate velocity for backward movement (opposite heading)
-                    # Add 180 degrees to heading for reverse direction
-                    reverse_heading = (heading + 180) % 360
-                    heading_rad = math.radians(reverse_heading)
-                    vx = speed * math.cos(heading_rad)
-                    vy = speed * math.sin(heading_rad)
-                    
-                    # Calculate duration
-                    duration = distance / speed if speed > 0 else 0
-                    
-                    # Send velocity command
-                    drone.send_velocity_target(vx, vy, 0, duration)
-                    logger.info(f"[OK] Drone {drone_id} flying backward (duration: {duration:.1f}s)")
-                    success_count += 1
-                except Exception as e:
-                    logger.error(f"[FAIL] Drone {drone_id} fly_back error: {str(e)}")
-            
-            return success_count == len(self.drones)
+            if success_count > 0:
+                logger.info(f"Move command sent to {success_count}/{len(self.drones)} drone(s)")
+                return True
+            else:
+                return False
     
     def mode_all(self, flight_mode: FlightMode) -> bool:
         """
-        Set flight mode for all drones simultaneously
+        Set flight mode for all drones
         
         Args:
-            flight_mode: FlightMode enum value (GUIDED, STABILIZE, LOITER, etc.)
+            flight_mode: FlightMode enum
         
         Returns:
-            True if all drones set mode successfully
+            True if all drones successfully set to the mode
         """
         if not self.drones:
             logger.error("No drones connected")
             return False
         
-        logger.info(f"Setting flight mode to {flight_mode.name} for all drones...")
+        logger.info(f"Setting all drones to {flight_mode.name} mode...")
         
         with self.lock:
             success_count = 0
             for drone_id, drone in self.drones.items():
                 try:
                     if drone.set_flight_mode(flight_mode):
-                        logger.info(f"[OK] Drone {drone_id} -> {flight_mode.name}")
+                        logger.info(f"[OK] Drone {drone_id} set to {flight_mode.name} mode")
                         success_count += 1
                     else:
                         logger.warning(f"[FAIL] Drone {drone_id} mode change failed")
                 except Exception as e:
-                    logger.error(f"[FAIL] Drone {drone_id} error: {str(e)}")
-            
-            if success_count == len(self.drones):
-                logger.info(f"All drones set to {flight_mode.name} mode")
-                return True
-            else:
-                logger.warning(f"Only {success_count}/{len(self.drones)} drones set mode")
-                return success_count > 0
+                    logger.error(f"[FAIL] Drone {drone_id} mode error: {str(e)}")
+        
+        return success_count == len(self.drones)
     
-    def get_swarm_status(self) -> Dict:
-        """Get status of all drones in swarm"""
-        with self.lock:
-            return {
-                'timestamp': datetime.now().isoformat(),
-                'swarm_armed': self.is_swarm_armed,
-                'connected_drones': len(self.drones),
-                'drones': {
-                    drone_id: drone.get_drone_status()
-                    for drone_id, drone in self.drones.items()
-                }
-            }
-    
-    def print_swarm_status(self):
-        """Print formatted status of all drones"""
-        status = self.get_swarm_status()
+    def stop_all(self) -> bool:
+        """
+        Emergency stop - set to BRAKE mode
         
-        print("\n" + "=" * 80)
-        print(f"Swarm Status - {status['timestamp']}")
-        print("=" * 80)
-        print(f"Swarm Armed: {'Yes' if status['swarm_armed'] else 'No'}")
-        print(f"Connected Drones: {status['connected_drones']}/{len(self.drone_configs)}")
-        print()
-        
-        for drone_id, drone_status in status['drones'].items():
-            print(f"Drone {drone_id}:")
-            print(f"  Armed:       {drone_status.get('armed', 'N/A')}")
-            print(f"  Mode:        {drone_status.get('mode', 'N/A')}")
-            print(f"  Altitude:    {drone_status.get('altitude', 'N/A'):.2f} m")
-            print(f"  Heading:     {drone_status.get('heading', 'N/A'):.1f}deg")
-            print(f"  Groundspeed: {drone_status.get('groundspeed', 'N/A'):.2f} m/s")
-            print(f"  Battery:     {drone_status.get('battery', 'N/A')}")
-            print(f"  Position:    {drone_status.get('position', 'N/A')}")
-            print()
-        
-        print("=" * 80 + "\n")
+        Returns:
+            True if all drones successfully stopped
+        """
+        logger.warning("EMERGENCY STOP - Setting all drones to BRAKE mode")
+        return self.mode_all(FlightMode.BRAKE)
 
 
 class SwarmCLI(cmd.Cmd):
-    """Interactive CLI for swarm control"""
+    """Command-line interface for swarm control"""
     
-    intro = """
-==========================================================================
-              Drone Swarm Control Agent v1.0
-          Multi-Drone Synchronized Flight Control System
-==========================================================================
-
-Laptop IP: 192.168.3.157
-Drones: 192.168.3.2, 192.168.3.3 (via MAVProxy UDP:14553)
-
-Type 'help' to see available commands.
-Type 'help <command>' for command-specific help.
-Type 'exit' to disconnect and exit.
-
-"""
+    intro = """DRONE SWARM AGENT CLI"""
     
-    prompt = "SWARM> "
+    prompt = "> "
     
     def __init__(self, swarm: SwarmController):
-        """Initialize CLI with swarm controller"""
         super().__init__()
         self.swarm = swarm
     
     def do_connect(self, arg):
         """Connect to all drones"""
         if self.swarm.connect_all():
-            print("[SUCCESS] Connected to all drones")
+            print("[SUCCESS] All drones connected")
         else:
-            print("[ERROR] Connection failed")
-    
-    def do_disconnect(self, arg):
-        """Disconnect from all drones"""
-        self.swarm.disconnect_all()
-        print("[SUCCESS] Disconnected from all drones")
-    
-    def do_arm(self, arg):
-        """Arm all drones for flight"""
-        if self.swarm.arm_all():
-            print("[SUCCESS] All drones armed successfully")
-        else:
-            print("[ERROR] Arm command failed")
+            print("[ERROR] Failed to connect to drones")
     
     def do_disarm(self, arg):
         """Disarm all drones"""
         if self.swarm.disarm_all():
-            print("[SUCCESS] All drones disarmed successfully")
+            print("[SUCCESS] All drones disarmed")
         else:
             print("[ERROR] Disarm command failed")
+    
+    def do_arm(self, arg):
+        """Arm all drones"""
+        if self.swarm.arm_all():
+            print("[SUCCESS] All drones armed")
+        else:
+            print("[ERROR] Arm command failed")
+
     
     def do_takeoff(self, arg):
         """
@@ -465,75 +373,63 @@ Type 'exit' to disconnect and exit.
         else:
             print("[ERROR] Land command failed")
     
-    def do_fly_to(self, arg):
+    def do_move(self, arg):
         """
-        Fly all drones forward based on current heading
+        Fly all drones forward or backward based on current heading using fly_to_target
         
         Usage:
-            fly_to <distance> [speed]
+            move <distance> [altitude]
         
         Args:
-            distance: Distance to fly in meters (required)
-            speed: Flight speed in m/s (default: 1.0)
+            distance: Distance to fly in meters. 
+                     Positive = move forward, Negative = move backward
+                     (required)
+            altitude: Target altitude in meters - maintains current if omitted
+                     (optional)
         
         Examples:
-            fly_to 5.0        - Fly 5 meters at 1.0 m/s
-            fly_to 10.0 2.0   - Fly 10 meters at 2.0 m/s
+            move 30          - Move forward 30 meters at current altitude
+            move -30         - Move backward 30 meters at current altitude
+            move 50 10       - Move forward 50 meters to 10 meters altitude
+            move -20 8       - Move backward 20 meters to 8 meters altitude
         """
         try:
             args = arg.strip().split()
             if not args:
-                print("[ERROR] Usage: fly_to <distance> [speed]")
+                print("[ERROR] Usage: move <distance> [altitude]")
+                print("  distance: positive=forward, negative=backward (meters)")
+                print("  altitude: optional target altitude (meters)")
                 return
             
             distance = float(args[0])
-            speed = float(args[1]) if len(args) > 1 else 1.0
+            altitude = float(args[1]) if len(args) > 1 else None
             
-            if distance <= 0 or speed <= 0:
-                print("[ERROR] Distance and speed must be positive")
+            # Validate distance
+            if abs(distance) < 1:
+                print("[ERROR] Distance must be at least 1 meter")
+                return
+            if abs(distance) > 500:
+                print("[ERROR] Distance cannot exceed 500 meters")
                 return
             
-            if self.swarm.fly_to(distance, speed):
-                print(f"[SUCCESS] All drones flying forward {distance}m at {speed}m/s")
+            # Validate altitude if provided
+            if altitude is not None:
+                if altitude < 0.5 or altitude > 100:
+                    print("[ERROR] Altitude must be between 0.5 and 100 meters")
+                    return
+            
+            direction = "forward" if distance >= 0 else "backward"
+            abs_dist = abs(distance)
+            alt_msg = f" to {altitude}m altitude" if altitude else " at current altitude"
+            
+            if self.swarm.move(distance, altitude):
+                print(f"[SUCCESS] All drones moving {direction} {abs_dist}m{alt_msg}")
             else:
-                print("[ERROR] Fly forward command failed")
+                print("[ERROR] Move command failed")
         except ValueError:
             print(f"[ERROR] Invalid arguments: {arg}")
-    
-    def do_fly_back(self, arg):
-        """
-        Fly all drones backward based on current heading
-        
-        Usage:
-            fly_back <distance> [speed]
-        
-        Args:
-            distance: Distance to fly backward in meters (required)
-            speed: Flight speed in m/s (default: 1.0)
-        
-        Examples:
-            fly_back 5.0        - Fly backward 5 meters at 1.0 m/s
-            fly_back 10.0 2.0   - Fly backward 10 meters at 2.0 m/s
-        """
-        try:
-            args = arg.strip().split()
-            if not args:
-                print("[ERROR] Usage: fly_back <distance> [speed]")
-                return
-            
-            distance = float(args[0])
-            speed = float(args[1]) if len(args) > 1 else 1.0
-            
-            if distance <= 0 or speed <= 0:
-                print("[ERROR] Distance and speed must be positive")
-                return
-            
-            if self.swarm.fly_back(distance, speed):
-                print(f"[SUCCESS] All drones flying backward {distance}m at {speed}m/s")
-            else:
-                print("[ERROR] Fly backward command failed")
-        except ValueError:
-            print(f"[ERROR] Invalid arguments: {arg}")
+            print("Usage: move <distance> [altitude]")
+
     
     def do_mode(self, arg):
         """
@@ -564,12 +460,12 @@ Type 'exit' to disconnect and exit.
         
         # List available modes
         if args[0] == '?':
-            print("\n" + "=" * 50)
+            print("\n" + "-" * 50)
             print("Available Flight Modes")
-            print("=" * 50)
+            print("-" * 50)
             for mode in FlightMode:
                 print(f"  - {mode.name:20}")
-            print("=" * 50 + "\n")
+            print("-" * 50 + "\n")
             return
         
         # Get mode name and convert to FlightMode enum
@@ -594,9 +490,145 @@ Type 'exit' to disconnect and exit.
         except Exception as e:
             print(f"[ERROR] Error setting mode: {str(e)}")
     
-    def do_status(self, arg):
-        """Show status of all drones"""
-        self.swarm.print_swarm_status()
+    def do_stop(self, arg):
+        """Emergency stop - set all drones to BRAKE mode"""
+        print("\nEMERGENCY STOP - Setting all drones to BRAKE mode")
+        if self.swarm.stop_all():
+            print("[SUCCESS] All drones emergency stopped")
+        else:
+            print("[ERROR] Emergency stop command failed")
+    
+    def do_check(self, arg):
+        """
+        Display status of all connected drones
+        
+        Usage:
+            status          - Show status of all drones
+            status <id>     - Show status of specific drone (e.g., status 1)
+        
+        Displays:
+            - Drone ID
+            - Armed status
+            - Flight mode
+            - Heading (degrees)
+            - Altitude (meters)
+            - Battery (voltage)
+            - GPS status (satellites and fix type)
+            - Groundspeed (m/s)
+        
+        Examples:
+            status          - Show all drones
+            status 1        - Show only drone 1
+        """
+        try:
+            # Parse optional drone ID argument
+            drone_id_filter = None
+            if arg.strip():
+                try:
+                    drone_id_filter = int(arg.strip())
+                except ValueError:
+                    print(f"[ERROR] Invalid drone ID: {arg}")
+                    return
+            
+            if not self.swarm.drones:
+                print("[ERROR] No drones connected")
+                return
+            
+            # Prepare drones to display
+            drones_to_show = {}
+            if drone_id_filter:
+                if drone_id_filter in self.swarm.drones:
+                    drones_to_show[drone_id_filter] = self.swarm.drones[drone_id_filter]
+                else:
+                    print(f"[ERROR] Drone {drone_id_filter} not found")
+                    return
+            else:
+                drones_to_show = self.swarm.drones
+            
+            # Display header
+            print(f"{'ID':>4} {'Armed':>7} {'Mode':>12} {'Heading':>10} {'Alt(m)':>8} {'Battery(V)':>12} {'GPS Sats':>10} {'Fix Type':>12} {'Speed(m/s)':>12}")
+            print("-" * 110)
+            
+            # Display status for each drone
+            for drone_id in sorted(drones_to_show.keys()):
+                drone = drones_to_show[drone_id]
+                status = drone.get_drone_status()
+                
+                # Extract status information with defaults
+                armed = "Yes" if status.get('armed', False) else "No"
+                mode = status.get('mode', 'Unknown')
+                heading = status.get('heading', 'N/A')
+                altitude = status.get('altitude', 'N/A')
+                _groundspeed = status.get('groundspeed', 'N/A')
+                
+                # Format heading
+                if isinstance(heading, (int, float)):
+                    heading_str = f"{heading:.1f}°"
+                else:
+                    heading_str = str(heading)
+                
+                # Format altitude
+                if isinstance(altitude, (int, float)):
+                    altitude_str = f"{altitude:.2f}"
+                else:
+                    altitude_str = str(altitude)
+                
+                # Format WPNAV_SPEED
+                try:
+                    wpnav_speed = drone.get_drone_param("WPNAV_SPEED")
+                    if wpnav_speed is not None:
+                        wpnav_speed_str = f"{float(wpnav_speed):.2f}"
+                    else:
+                        wpnav_speed_str = "N/A"
+                except Exception:
+                    wpnav_speed_str = "N/A"
+                
+                # Extract battery information
+                battery_info = status.get('battery')
+                if battery_info:
+                    if isinstance(battery_info, dict):
+                        battery_voltage = battery_info.get('voltage', 'N/A')
+                        battery_str = f"{int(battery_voltage)/1000:.2f}"
+                else:
+                    battery_str = "N/A"
+                
+                # Extract GPS information
+                gps_info = status.get('gps', {})
+                if gps_info:
+                    satellites = gps_info.get('satellites_visible', 'N/A')
+                    fix_type = gps_info.get('fix_type', 'N/A')
+                    
+                    # Map fix type numbers to names
+                    fix_type_names = {
+                        0: "No Fix",
+                        1: "Dead Reck",
+                        2: "2D Fix",
+                        3: "3D Fix",
+                        4: "DGPS Fix",
+                        5: "RTK Float",
+                        6: "RTK Fixed"
+                    }
+                    if isinstance(fix_type, int):
+                        fix_type_str = fix_type_names.get(fix_type, f"Unknown({fix_type})")
+                    else:
+                        fix_type_str = str(fix_type)
+                    
+                    if isinstance(satellites, int):
+                        satellites_str = str(satellites)
+                    else:
+                        satellites_str = str(satellites)
+                else:
+                    satellites_str = "N/A"
+                    fix_type_str = "N/A"
+                
+                # Print drone status row
+                print(f"{drone_id:>4} {armed:>7} {mode:>12} {heading_str:>10} {altitude_str:>8} {battery_str:>12} {satellites_str:>10} {fix_type_str:>12} {wpnav_speed_str:>12}")
+
+            # print("\nFix Types: No Fix=0, Dead Reck=1, 2D=2, 3D=3, DGPS=4, RTK Float=5, RTK Fixed=6\n")
+            
+        except Exception as e:
+            logger.error(f"Error getting drone status: {str(e)}")
+            print(f"[ERROR] Failed to get drone status: {str(e)}")
     
     def do_help(self, arg):
         """Show available commands and their usage"""
@@ -612,29 +644,26 @@ Type 'exit' to disconnect and exit.
             # Show all available commands
             commands = [
                 ('connect', 'Connect to all drones'),
-                ('disconnect', 'Disconnect from all drones'),
-                ('arm', 'Arm all drones for flight'),
-                ('disarm', 'Disarm all drones (after landing)'),
-                ('status', 'Show status of all drones'),
+                ('arm', 'Arm all drones'),
+                ('disarm', 'Disarm all drones'),
                 ('takeoff <alt>', 'Takeoff to altitude in meters'),
-                ('land', 'Land all drones'),
-                ('fly_to <dist> [speed]', 'Fly forward by distance (meters)'),
-                ('fly_back <dist> [speed]', 'Fly backward by distance (meters)'),
+                ('move <dist> [alt]', 'Move forward/back by distance (use fly_to_target)'),
                 ('mode <mode_name>', 'Set flight mode (GUIDED, STABILIZE, LOITER, etc.)'),
-                ('mode ?', 'List available flight modes'),
+                ('stop', 'Emergency stop (BRAKE mode)'),
+                ('land', 'Land all drones'),
+                ('check', 'Check drones status before start'),
                 ('help [cmd]', 'Show help for command'),
                 ('exit', 'Disconnect and exit swarm agent'),
             ]
             
-            print("\n" + "=" * 80)
+            print("\n" + "-" * 80)
             print("Drone Swarm CLI - Available Commands")
-            print("=" * 80)
+            print("-" * 80)
             for cmd, desc in commands:
                 print(f"  {cmd:40} - {desc}")
-            print("=" * 80)
-            print("\nFor help on a specific command, type: help <command_name>")
-            print("Example: help mode\n")
-    
+            print("-" * 80)
+
+
     def do_exit(self, arg):
         """Disconnect and exit"""
         print("\nDisarming and disconnecting all drones...")
@@ -642,7 +671,7 @@ Type 'exit' to disconnect and exit.
             self.swarm.disarm_all()
             time.sleep(1)
             self.swarm.disconnect_all()
-        except:
+        except Exception:
             pass
         
         print("Goodbye!\n")
@@ -660,13 +689,11 @@ Type 'exit' to disconnect and exit.
 def main():
     """Main entry point"""
     
-    print("Drone Swarm Control Agent")
-    
     # Configure drone list
     # UPDATE THESE IPs TO MATCH YOUR DRONES
     drone_configs = [
-        # DroneConfig(drone_id=1, ip_address='192.168.3.157', port=14553),
-        # DroneConfig(drone_id=2, ip_address='192.168.3.157', port=14653),
+        # DroneConfig(drone_id=1, ip_address='192.168.3.200', port=14553),
+        # DroneConfig(drone_id=2, ip_address='192.168.3.200', port=14653),
         DroneConfig(drone_id=1, ip_address='172.21.128.1', port=14553),
         DroneConfig(drone_id=2, ip_address='172.21.128.1', port=14563),
         DroneConfig(drone_id=3, ip_address='172.21.128.1', port=14573),
@@ -683,14 +710,14 @@ def main():
         try:
             swarm.disarm_all()
             swarm.disconnect_all()
-        except:
+        except Exception:
             pass
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         try:
             swarm.disarm_all()
             swarm.disconnect_all()
-        except:
+        except Exception:
             pass
     
     print("Exiting swarm agent...")
