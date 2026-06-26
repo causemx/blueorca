@@ -1,18 +1,19 @@
-import sys
-import time
 import enum
-import threading
 import logging
-import pymavlink.dialects.v20.all as dialect
-
-from typing import Dict
-from pymavlink import mavutil
+import sys
+import threading
+import time
 from datetime import datetime
+from typing import Dict
+
+import pymavlink.dialects.v20.all as dialect
+from pymavlink import mavutil
 
 # from gps_state_tracker import GPSStateTracker
 
 # Configure basic settings
 logging.basicConfig(level=logging.INFO)
+
 
 # Define flight mode as enum class
 class FlightMode(enum.Enum):
@@ -76,26 +77,27 @@ class DroneNode:
         self.altitude = 0
 
         # Heartbeat timeout tracking
-        self.activate = False  # True = heartbeat received, False = no heartbeat for 5 seconds
+        self.activate = (
+            False  # True = heartbeat received, False = no heartbeat for 5 seconds
+        )
         self.last_heartbeat_time = datetime.now()
         self.heartbeat_timeout = 5  # Seconds before marking as inactive
 
         # Status tracking variables
         self.current_status = {
-            'armed': False,
-            'mode': None,
-            'altitude': 0,
-            'battery': None,
-            'gps': None,
-            'heading': None,
-            'groundspeed': None,
-            'position': None,
-            'system_status': None
+            "armed": False,
+            "mode": None,
+            "altitude": 0,
+            "battery": None,
+            "gps": None,
+            "heading": None,
+            "groundspeed": None,
+            "position": None,
+            "system_status": None,
         }
         self.tracking = False
         self.tracker_thread = None
-        
-        
+
         """
         # [GPS_TRACKER] configuration
 
@@ -112,13 +114,14 @@ class DroneNode:
         self.gps_tracker = GPSStateTracker(self, interval=1)
         """
 
-
     def start_status_tracking(self):
         """Start the background status tracking thread"""
         if not self.tracking:
             self.tracking = True
             self.tracker_thread = threading.Thread(target=self._status_tracker)
-            self.tracker_thread.daemon = True  # Thread will close when main program exits
+            self.tracker_thread.daemon = (
+                True  # Thread will close when main program exits
+            )
             self.tracker_thread.start()
 
     def stop_status_tracking(self):
@@ -133,10 +136,12 @@ class DroneNode:
             try:
                 # Check for heartbeat timeout (no heartbeat for 5 seconds)
                 current_time = datetime.now()
-                time_since_heartbeat = (current_time - self.last_heartbeat_time).total_seconds()
+                time_since_heartbeat = (
+                    current_time - self.last_heartbeat_time
+                ).total_seconds()
                 if time_since_heartbeat > self.heartbeat_timeout:
                     self.activate = False
-                
+
                 # Receive messages
                 msg = self.drone.recv_match(blocking=True, timeout=1.0)
                 if msg:
@@ -144,36 +149,53 @@ class DroneNode:
                     _timestamp = datetime.now().strftime("%H:%M:%S")
 
                     # Process different message types
-                    if msg_type == 'HEARTBEAT':
+                    if msg_type == "HEARTBEAT":
                         # Update heartbeat timestamp and activate status
                         self.last_heartbeat_time = datetime.now()
                         self.activate = True
-                        
-                        self.current_status['armed'] = bool(msg.base_mode & dialect.MAV_MODE_FLAG_SAFETY_ARMED)
-                        self.current_status['system_status'] = dialect.enums['MAV_STATE'][msg.system_status].name
+
+                        self.current_status["armed"] = bool(
+                            msg.base_mode & dialect.MAV_MODE_FLAG_SAFETY_ARMED
+                        )
+                        self.current_status["system_status"] = dialect.enums[
+                            "MAV_STATE"
+                        ][msg.system_status].name
 
                         # Update flight mode from heartbeat
                         custom_mode = msg.custom_mode
                         flight_mode_str = mavutil.mode_mapping_acm.get(custom_mode)
                         if flight_mode_str:
                             try:
-                                self.flight_mode = FlightMode.from_string(flight_mode_str)
-                                self.current_status['mode'] = flight_mode_str
+                                self.flight_mode = FlightMode.from_string(
+                                    flight_mode_str
+                                )
+                                self.current_status["mode"] = flight_mode_str
                             except (ValueError, AttributeError):
                                 # If not a known enum value, store the string directly
                                 self.flight_mode = flight_mode_str
-                                self.current_status['mode'] = flight_mode_str
+                                self.current_status["mode"] = flight_mode_str
 
-                    elif msg_type == 'GLOBAL_POSITION_INT':
-                        self.current_status['altitude'] = msg.relative_alt / 1000  # Convert to meters
-                        self.current_status['position'] = (msg.lat / 1e7, msg.lon / 1e7)  # Convert to degrees
+                    elif msg_type == "GLOBAL_POSITION_INT":
+                        self.current_status["altitude"] = (
+                            msg.relative_alt / 1000
+                        )  # Convert to meters
+                        self.current_status["position"] = (
+                            msg.lat / 1e7,
+                            msg.lon / 1e7,
+                        )  # Convert to degrees
 
-                         # Update heading if available
-                        if hasattr(msg, 'hdg') and msg.hdg != 0 and msg.hdg != 65535:  # Valid heading values
-                            heading = msg.hdg / 100.0 if msg.hdg > 360 else msg.hdg  # Convert if needed
-                            self.current_status['heading'] = heading
-                            logging.debug(f"Updated heading from GLOBAL_POSITION_INT: {heading}°")
-                        
+                        # Update heading if available
+                        if (
+                            hasattr(msg, "hdg") and msg.hdg != 0 and msg.hdg != 65535
+                        ):  # Valid heading values
+                            heading = (
+                                msg.hdg / 100.0 if msg.hdg > 360 else msg.hdg
+                            )  # Convert if needed
+                            self.current_status["heading"] = heading
+                            logging.debug(
+                                f"Updated heading from GLOBAL_POSITION_INT: {heading}°"
+                            )
+
                         """ [GPS_TRAKCER] logging gps
                         with self.gps_lock:
                             self.latest_gps_state.update({
@@ -184,16 +206,16 @@ class DroneNode:
                             })
                         """
 
-                    elif msg_type == 'VFR_HUD':
-                        self.current_status['groundspeed'] = msg.groundspeed
-                        self.current_status['heading'] = msg.heading
+                    elif msg_type == "VFR_HUD":
+                        self.current_status["groundspeed"] = msg.groundspeed
+                        self.current_status["heading"] = msg.heading
 
-                    elif msg_type == 'GPS_RAW_INT':
-                        self.current_status['gps'] = {
-                            'fix_type': msg.fix_type,
-                            'satellites_visible': msg.satellites_visible
+                    elif msg_type == "GPS_RAW_INT":
+                        self.current_status["gps"] = {
+                            "fix_type": msg.fix_type,
+                            "satellites_visible": msg.satellites_visible,
                         }
-                        
+
                         """ [GPS_TRACKER] logging error
                         with self.gps_lock:
                             self.latest_gps_state.update({
@@ -205,13 +227,21 @@ class DroneNode:
                             logging.debug(f"GPS_RAW_INT: EPH={msg.eph/100.0:.2f}m, "
                                        f"EPV={msg.epv/100.0:.2f}m, Sats={msg.satellites_visible}")
                         """
-                                       
-                    elif msg_type == 'SYS_STATUS':
-                        battery_remaining = msg.battery_remaining if hasattr(msg, 'battery_remaining') else None
-                        voltage = msg.voltage_battery if hasattr(msg, 'voltage_battery') else None
-                        self.current_status['battery'] = {
-                            'percentage': battery_remaining,
-                            'voltage': voltage
+
+                    elif msg_type == "SYS_STATUS":
+                        battery_remaining = (
+                            msg.battery_remaining
+                            if hasattr(msg, "battery_remaining")
+                            else None
+                        )
+                        voltage = (
+                            msg.voltage_battery
+                            if hasattr(msg, "voltage_battery")
+                            else None
+                        )
+                        self.current_status["battery"] = {
+                            "percentage": battery_remaining,
+                            "voltage": voltage,
                         }
 
             except Exception as e:
@@ -226,13 +256,17 @@ class DroneNode:
         """
         try:
             if baudrate is not None:
-                self.drone = mavutil.mavlink_connection(self.connection_string, baudrate)
+                self.drone = mavutil.mavlink_connection(
+                    self.connection_string, baudrate
+                )
             else:
                 self.drone = mavutil.mavlink_connection(self.connection_string)
 
             self.drone.wait_heartbeat()
-            logging.info(f"Connected to drone! (system: {self.drone.target_system}, "
-                           f"component: {self.drone.target_component})")
+            logging.info(
+                f"Connected to drone! (system: {self.drone.target_system}, "
+                f"component: {self.drone.target_component})"
+            )
 
             # Request data streams immediately after connection
             self.request_data_streams()
@@ -251,16 +285,16 @@ class DroneNode:
         if not self.drone:
             logging.error("No drone connection")
             return False
-        
+
         # Define the streams we want with rates in Hz
         stream_rates = {
-            mavutil.mavlink.MAV_DATA_STREAM_ALL: 5,        # Position data at 5Hz
+            mavutil.mavlink.MAV_DATA_STREAM_ALL: 5,  # Position data at 5Hz
             # mavutil.mavlink.MAV_DATA_STREAM_EXTRA1: 5,          # Attitude and heading at 5Hz
             # mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS: 2, # System status at 2Hz
             # mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS: 2,     # Raw sensor data at 2Hz
             # mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS: 1      # RC channel data at 1Hz
         }
-        
+
         # Request each stream
         for stream_id, rate in stream_rates.items():
             self.drone.mav.request_data_stream_send(
@@ -268,13 +302,13 @@ class DroneNode:
                 self.drone.target_component,
                 stream_id,
                 rate,  # Rate in Hz
-                1      # Start/stop (1=start)
+                1,  # Start/stop (1=start)
             )
             logging.info(f"Requested data stream {stream_id} at {rate}Hz")
-        
+
         # Small delay to allow streams to start
         time.sleep(0.5)
-        
+
         return True
 
     """ [GPS_TRACKER] utility functions
@@ -317,7 +351,7 @@ class DroneNode:
             param4=0,
             param5=0,
             param6=0,
-            param7=0
+            param7=0,
         )
 
         # Send the arm message
@@ -325,17 +359,21 @@ class DroneNode:
         logging.info("Arm the vehicle")
 
         # Wait for arm acknowledge
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+        ack = self.drone.recv_match(type="COMMAND_ACK", blocking=True, timeout=1.0)
 
         if ack and ack.command == dialect.MAV_CMD_COMPONENT_ARM_DISARM:
-            success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+            success = ack.result == dialect.MAV_RESULT_ACCEPTED
             if success:
                 self.is_armed = True
                 logging.info("Armed successfully!")
                 return True
             else:
                 # Log the specific failure reason if available
-                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                result_name = (
+                    dialect.enums["MAV_RESULT"][ack.result].name
+                    if ack.result in dialect.enums["MAV_RESULT"]
+                    else f"Unknown ({ack.result})"
+                )
                 logging.warning(f"Arm attempt failed: {result_name}")
         else:
             logging.warning("No acknowledgment received for arm attempt")
@@ -367,25 +405,28 @@ class DroneNode:
             param4=0,
             param5=0,
             param6=0,
-            param7=0
+            param7=0,
         )
 
         # Send the disarm message
         self.drone.mav.send(disarm_message)
 
         # Wait for acknowledgment
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+        ack = self.drone.recv_match(type="COMMAND_ACK", blocking=True, timeout=1.0)
 
         if ack and ack.command == dialect.MAV_CMD_COMPONENT_ARM_DISARM:
-            success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+            success = ack.result == dialect.MAV_RESULT_ACCEPTED
             if success:
                 self.is_armed = False
                 logging.info("Disarmed successfully!")
                 return True
             else:
                 # Log the specific failure reason if available
-                result_name = dialect.enums['MAV_RESULT'][ack.result].name\
-                      if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                result_name = (
+                    dialect.enums["MAV_RESULT"][ack.result].name
+                    if ack.result in dialect.enums["MAV_RESULT"]
+                    else f"Unknown ({ack.result})"
+                )
                 logging.warning(f"Disarm attempt failed: {result_name}")
         else:
             logging.warning("No acknowledgment received for disarm attempt")
@@ -422,26 +463,31 @@ class DroneNode:
             param4=0,
             param5=0,
             param6=0,
-            param7=target_altitude
+            param7=target_altitude,
         )
-
 
         # Send the takeoff message
         self.drone.mav.send(takeoff_message)
         logging.info(f"Takeoff attempt to {target_altitude}m")
 
         # Wait for acknowledgment
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=False, timeout=2.0)
+        ack = self.drone.recv_match(type="COMMAND_ACK", blocking=False, timeout=2.0)
 
         if ack and ack.command == dialect.MAV_CMD_NAV_TAKEOFF:
-            success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+            success = ack.result == dialect.MAV_RESULT_ACCEPTED
             if success:
-                logging.info(f"Takeoff command accepted! Target altitude: {target_altitude}m")
+                logging.info(
+                    f"Takeoff command accepted! Target altitude: {target_altitude}m"
+                )
                 self.altitude = target_altitude
                 return True
             else:
                 # Log the specific failure reason if available
-                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                result_name = (
+                    dialect.enums["MAV_RESULT"][ack.result].name
+                    if ack.result in dialect.enums["MAV_RESULT"]
+                    else f"Unknown ({ack.result})"
+                )
                 logging.warning(f"Takeoff attempt failed: {result_name}")
                 return False
         else:
@@ -455,106 +501,110 @@ class DroneNode:
         except (ValueError, OverflowError) as e:
             logging.error(f"Failed to convert coordinates to MAVLink format: {e}")
             return False
-        
+
         # Get current timestamp for the message
         time_boot_ms = int(time.time() * 1000) % (2**32)  # Ensure it fits in uint32
-        
+
         # Define which fields to use in the SET_POSITION_TARGET_GLOBAL_INT message
         # We're only setting position (lat, lon, alt)
         mask = (
-            dialect.POSITION_TARGET_TYPEMASK_VX_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_VY_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_FORCE_SET |
-            dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+            dialect.POSITION_TARGET_TYPEMASK_VX_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_VY_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_VZ_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_FORCE_SET
+            | dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
-        
+
         # Create SET_POSITION_TARGET_GLOBAL_INT message
         position_target_msg = dialect.MAVLink_set_position_target_global_int_message(
-            time_boot_ms=time_boot_ms,                             # Not used
+            time_boot_ms=time_boot_ms,  # Not used
             target_system=self.drone.target_system,
             target_component=self.drone.target_component,
             coordinate_frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # Altitude relative to home
-            type_mask=mask,                             # Use only the position values
-            lat_int=t_lat_int,                            # Latitude (degrees * 1e7)
-            lon_int=t_lon_int,                            # Longitude (degrees * 1e7)
-            alt=altitude,                                    # Altitude (meters, relative to home)
-            vx=0,                                       # X velocity (not used)
-            vy=0,                                       # Y velocity (not used)
-            vz=0,                                       # Z velocity (not used)
-            afx=0,                                      # X acceleration (not used)
-            afy=0,                                      # Y acceleration (not used)
-            afz=0,                                      # Z acceleration (not used)
-            yaw=0,                                      # Yaw (not used)
-            yaw_rate=0                                  # Yaw rate (not used)
+            type_mask=mask,  # Use only the position values
+            lat_int=t_lat_int,  # Latitude (degrees * 1e7)
+            lon_int=t_lon_int,  # Longitude (degrees * 1e7)
+            alt=altitude,  # Altitude (meters, relative to home)
+            vx=0,  # X velocity (not used)
+            vy=0,  # Y velocity (not used)
+            vz=0,  # Z velocity (not used)
+            afx=0,  # X acceleration (not used)
+            afy=0,  # Y acceleration (not used)
+            afz=0,  # Z acceleration (not used)
+            yaw=0,  # Yaw (not used)
+            yaw_rate=0,  # Yaw rate (not used)
         )
 
         # Send the position target message
         self.drone.mav.send(position_target_msg)
         logging.info("Start position target command attempt")
-        
+
         # Unlike mission commands, SET_POSITION_TARGET_GLOBAL_INT typically doesn't get a direct ACK
         # We'll use a brief delay and check if mode is still GUIDED as a basic validation
         time.sleep(0.5)
-        
+
         # Check if still in GUIDED mode
         current_mode = self.get_current_mode()
         if current_mode == FlightMode.GUIDED:
             logging.info("Position target command sent in GUIDED mode!")
             success = True
         else:
-            logging.warning(f"Not in GUIDED mode after sending command, mode is {current_mode}") 
-        
+            logging.warning(
+                f"Not in GUIDED mode after sending command, mode is {current_mode}"
+            )
+
         if success:
-            logging.debug(f"Successfully sent position target command to flyto {target_lat}, {target_lon}")
+            logging.debug(
+                f"Successfully sent position target command to flyto {target_lat}, {target_lon}"
+            )
         else:
             logging.error("Failed to send position target command after attempts")
-        
+
         return success
 
     def send_velocity_target(self, vx, vy, vz):
         """
         Send velocity commands to drone in body-frame (NED) coordinates.
-        
+
         Args:
             vx (float): Forward velocity in m/s (positive = forward)
             vy (float): Right velocity in m/s (positive = right)
             vz (float): Down velocity in m/s (positive = down in NED)
             duration (float): How long to hold this velocity in seconds (0 = continuous)
-        
+
         Returns:
             bool: True if command sent successfully, False otherwise
-            
+
         Example:
             >>> drone.send_velocity_target(vx=2.0, vy=0.5, vz=-1.0, duration=1.0)
             True
         """
-        
+
         # Check drone is connected
         if not self.drone:
             logging.error("Drone not connected")
             return False
-        
+
         try:
             # Get current time in milliseconds
             time_boot_ms = int(time.time() * 1000) % (2**32)
-            
+
             # Define type mask for velocity-only commands
             type_mask = (
-                dialect.POSITION_TARGET_TYPEMASK_X_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_Y_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_Z_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
-                dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+                dialect.POSITION_TARGET_TYPEMASK_X_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_Y_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_Z_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+                | dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
             )
-            
+
             # Send velocity command
             self.drone.mav.set_position_target_local_ned_send(
                 time_boot_ms=time_boot_ms,
@@ -572,29 +622,29 @@ class DroneNode:
                 afy=0,
                 afz=0,
                 yaw=0,
-                yaw_rate=0
+                yaw_rate=0,
             )
-            
+
             logging.info(f"Velocity command sent: vx={vx}, vy={vy}, vz={vz}")
-            
+
             # Verify command was executed
             """
             time.sleep(0.1)
             current_mode = self.get_current_mode()
-            
+
             if current_mode == FlightMode.GUIDED:
                 logging.debug("Command confirmed - drone still in GUIDED mode")
-                
+
                 # If duration specified, sleep for that duration
                 if duration > 0:
                     time.sleep(duration)
-                
+
                 return True
             else:
                 logging.warning(f"Mode changed to {current_mode} after velocity command")
                 return False
             """
-                
+
         except Exception as e:
             logging.error(f"Failed to send velocity command: {str(e)}")
             return False
@@ -602,76 +652,85 @@ class DroneNode:
     def fly_to_here(self, distance=5.0, angle=0.0, max_retries=3):
         """
         Command the drone to fly to a location in a specific direction using SET_POSITION_TARGET_GLOBAL_INT
-        
+
         Args:
             distance (float): Distance to fly in meters (default: 5.0m)
             angle (float): Angle in degrees relative to current heading (default: 0.0)
                         0 = straight ahead, 90 = right, -90 = left, 180 = behind
             max_retries (int): Maximum number of retry attempts for commands
-            
+
         Returns:
             bool: True if command accepted, False otherwise
         """
         import math
         import time
-        
+
         if not self.drone:
             logging.error("No drone connection")
             return False
-        
+
         # Get current position and heading
         status = self.get_drone_status()
-        
-        if not status.get('position') or not status.get('heading'):
+
+        if not status.get("position") or not status.get("heading"):
             logging.error("Cannot get current position or heading")
             return False
-        
-        current_lat, current_lon = status['position']
-        heading = status['heading']
-        
+
+        current_lat, current_lon = status["position"]
+        heading = status["heading"]
+
         if heading is None:
             logging.error("Cannot determine current heading")
             return False
-        
+
         # Calculate target heading by adding the angle to current heading
         target_heading = (heading + angle) % 360
-        
+
         # Convert target heading to radians for calculation
         target_heading_rad = math.radians(target_heading)
-        
+
         # Earth radius in meters
         earth_radius = 6378137.0
-        
+
         # Calculate target position using great circle formula
         # Convert distance from meters to radians
         angular_distance = distance / earth_radius
-        
+
         # Calculate target position
         target_lat = math.asin(
-            math.sin(math.radians(current_lat)) * math.cos(angular_distance) +
-            math.cos(math.radians(current_lat)) * math.sin(angular_distance) * math.cos(target_heading_rad)
+            math.sin(math.radians(current_lat)) * math.cos(angular_distance)
+            + math.cos(math.radians(current_lat))
+            * math.sin(angular_distance)
+            * math.cos(target_heading_rad)
         )
-        
+
         target_lon = math.radians(current_lon) + math.atan2(
-            math.sin(target_heading_rad) * math.sin(angular_distance) * math.cos(math.radians(current_lat)),
-            math.cos(angular_distance) - math.sin(math.radians(current_lat)) * math.sin(target_lat)
+            math.sin(target_heading_rad)
+            * math.sin(angular_distance)
+            * math.cos(math.radians(current_lat)),
+            math.cos(angular_distance)
+            - math.sin(math.radians(current_lat)) * math.sin(target_lat),
         )
-        
+
         # Convert target position back to degrees
         target_lat = math.degrees(target_lat)
         target_lon = math.degrees(target_lon)
-        
-        logging.info(f"Current position: Lat {current_lat:.6f}, Lon {current_lon:.6f}, Heading {heading}°")
-        logging.info(f"Target position: Lat {target_lat:.6f}, Lon {target_lon:.6f}, Distance {distance}m, Angle {angle}°")
-        
+
+        logging.info(
+            f"Current position: Lat {current_lat:.6f}, Lon {current_lon:.6f}, Heading {heading}°"
+        )
+        logging.info(
+            f"Target position: Lat {target_lat:.6f}, Lon {target_lon:.6f}, Distance {distance}m, Angle {angle}°"
+        )
+
         # Set flight mode to GUIDED
         if not self.set_flight_mode(FlightMode.GUIDED):
             logging.error("Failed to set GUIDED mode, aborting flight")
             return False
-        
+
         # Wait for mode change
         time.sleep(1)
-        
+
         # Check if drone is armed
         if not self.is_armed:
             logging.info("Drone not armed, attempting to arm...")
@@ -680,81 +739,91 @@ class DroneNode:
                 return False
             # Wait for arming
             time.sleep(1)
-        
+
         # Convert lat/lon to int format expected by MAVLink (degrees * 1e7)
         lat_int = int(target_lat * 1e7)
         lon_int = int(target_lon * 1e7)
-        
+
         # Default altitude: use current + 2m if available, otherwise 10m
-        alt = (status.get('altitude', 0) + 2) if status.get('altitude') is not None else 10.0
-        
+        alt = (
+            (status.get("altitude", 0) + 2)
+            if status.get("altitude") is not None
+            else 10.0
+        )
+
         # Define which fields to use in the SET_POSITION_TARGET_GLOBAL_INT message
         # We're only setting position (lat, lon, alt)
         mask = (
-            dialect.POSITION_TARGET_TYPEMASK_VX_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_VY_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_FORCE_SET |
-            dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
-            dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+            dialect.POSITION_TARGET_TYPEMASK_VX_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_VY_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_VZ_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_FORCE_SET
+            | dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+            | dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
-        
+
         # Create SET_POSITION_TARGET_GLOBAL_INT message
         position_target_msg = dialect.MAVLink_set_position_target_global_int_message(
-            time_boot_ms=0,                             # Not used
+            time_boot_ms=0,  # Not used
             target_system=self.drone.target_system,
             target_component=self.drone.target_component,
             coordinate_frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # Altitude relative to home
-            type_mask=mask,                             # Use only the position values
-            lat_int=lat_int,                            # Latitude (degrees * 1e7)
-            lon_int=lon_int,                            # Longitude (degrees * 1e7)
-            alt=alt,                                    # Altitude (meters, relative to home)
-            vx=0,                                       # X velocity (not used)
-            vy=0,                                       # Y velocity (not used)
-            vz=0,                                       # Z velocity (not used)
-            afx=0,                                      # X acceleration (not used)
-            afy=0,                                      # Y acceleration (not used)
-            afz=0,                                      # Z acceleration (not used)
-            yaw=0,                                      # Yaw (not used)
-            yaw_rate=0                                  # Yaw rate (not used)
+            type_mask=mask,  # Use only the position values
+            lat_int=lat_int,  # Latitude (degrees * 1e7)
+            lon_int=lon_int,  # Longitude (degrees * 1e7)
+            alt=alt,  # Altitude (meters, relative to home)
+            vx=0,  # X velocity (not used)
+            vy=0,  # Y velocity (not used)
+            vz=0,  # Z velocity (not used)
+            afx=0,  # X acceleration (not used)
+            afy=0,  # Y acceleration (not used)
+            afz=0,  # Z acceleration (not used)
+            yaw=0,  # Yaw (not used)
+            yaw_rate=0,  # Yaw rate (not used)
         )
-        
+
         attempts = 0
         success = False
-        
+
         # Try to send the SET_POSITION_TARGET_GLOBAL_INT message with retries
         while attempts < max_retries and not success:
             attempts += 1
-            
+
             # Send the position target message
             self.drone.mav.send(position_target_msg)
             logging.info(f"Position target command attempt {attempts}/{max_retries}")
-            
+
             # Unlike mission commands, SET_POSITION_TARGET_GLOBAL_INT typically doesn't get a direct ACK
             # We'll use a brief delay and check if mode is still GUIDED as a basic validation
             time.sleep(0.5)
-            
+
             # Check if still in GUIDED mode
             current_mode = self.get_current_mode()
             if current_mode == FlightMode.GUIDED:
                 logging.info("Position target command sent in GUIDED mode!")
                 success = True
             else:
-                logging.warning(f"Not in GUIDED mode after sending command, mode is {current_mode}")
-                
+                logging.warning(
+                    f"Not in GUIDED mode after sending command, mode is {current_mode}"
+                )
+
             # If attempt failed and we're not at max retries, wait before trying again
             if not success and attempts < max_retries:
                 logging.info("Retrying in 1 second...")
                 time.sleep(1)
-        
+
         if success:
-            logging.info(f"Successfully sent position target command to fly {distance}m at {angle}° angle")
+            logging.info(
+                f"Successfully sent position target command to fly {distance}m at {angle}° angle"
+            )
         else:
-            logging.error(f"Failed to send position target command after {max_retries} attempts")
-        
+            logging.error(
+                f"Failed to send position target command after {max_retries} attempts"
+            )
+
         return success
 
     def land(self):
@@ -779,7 +848,7 @@ class DroneNode:
             param4=0,
             param5=0,
             param6=0,
-            param7=0
+            param7=0,
         )
 
         # Send the land message
@@ -787,16 +856,20 @@ class DroneNode:
         logging.info("Land start")
 
         # Wait for acknowledgment
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+        ack = self.drone.recv_match(type="COMMAND_ACK", blocking=True, timeout=1.0)
 
         if ack and ack.command == dialect.MAV_CMD_NAV_LAND:
-            success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+            success = ack.result == dialect.MAV_RESULT_ACCEPTED
             if success:
                 logging.info("Land command accepted!")
                 return True
             else:
                 # Log the specific failure reason if available
-                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                result_name = (
+                    dialect.enums["MAV_RESULT"][ack.result].name
+                    if ack.result in dialect.enums["MAV_RESULT"]
+                    else f"Unknown ({ack.result})"
+                )
                 logging.warning(f"Land attempt failed: {result_name}")
         else:
             logging.warning("No acknowledgment received for land")
@@ -860,14 +933,14 @@ class DroneNode:
                 param4=0,
                 param5=0,
                 param6=0,
-                param7=0
+                param7=0,
             )
 
             # Send the request message
             self.drone.mav.send(request_message)
 
             # Wait for heartbeat message to get mode
-            msg = self.drone.recv_match(type='HEARTBEAT', blocking=True, timeout=1.0)
+            msg = self.drone.recv_match(type="HEARTBEAT", blocking=True, timeout=1.0)
             if msg:
                 # Convert mode to string using MAVLink mode mapping
                 custom_mode = msg.custom_mode
@@ -881,7 +954,9 @@ class DroneNode:
                         logging.info(f"Current flight mode: {flight_mode_str}")
                         return flight_mode_enum
                     except ValueError:
-                        logging.warning(f"Unknown flight mode string: {flight_mode_str}")
+                        logging.warning(
+                            f"Unknown flight mode string: {flight_mode_str}"
+                        )
                         # Still update the internal string representation
                         self.flight_mode = flight_mode_str
                         return flight_mode_str
@@ -897,14 +972,13 @@ class DroneNode:
             logging.error(f"Error getting flight mode: {str(e)}")
             return self.flight_mode  # Return last known mode on error
 
-    
     def get_drone_param(self, param_name):
         """
         Get a drone parameter value
-        
+
         Args:
             param_name (str): Parameter name (e.g., 'WPNAV_SPEED')
-        
+
         Returns:
             float: Parameter value, or None if not found or error
         """
@@ -913,7 +987,7 @@ class DroneNode:
 
         # Convert param_name to bytes if needed
         if isinstance(param_name, str):
-            param_name_bytes = param_name.encode('utf-8')
+            param_name_bytes = param_name.encode("utf-8")
         else:
             param_name_bytes = param_name
 
@@ -921,35 +995,36 @@ class DroneNode:
             self.drone.target_system,
             self.drone.target_component,
             param_name_bytes,
-            -1  # -1 means we don't know the index, search by string name
+            -1,  # -1 means we don't know the index, search by string name
         )
 
         try:
             # Wait for parameter response (timeout after 2 seconds)
             start_time = time.time()
             while time.time() - start_time < 2:
-                param = self.drone.recv_match(type='PARAM_VALUE', blocking=False, timeout=0.5)
-                
+                param = self.drone.recv_match(
+                    type="PARAM_VALUE", blocking=False, timeout=0.5
+                )
+
                 # Check if the returned parameter matches the one we requested
                 if param:
                     # Handle param_id as bytes or string
                     param_id = param.param_id
                     if isinstance(param_id, bytes):
-                        param_id = param_id.decode('utf-8').strip()
+                        param_id = param_id.decode("utf-8").strip()
                     else:
                         param_id = param_id.strip()
-                    
+
                     if param_id == param_name:
                         logging.debug(f"Success! {param_name} = {param.param_value}")
                         return param.param_value
-            
+
             logging.warning(f"Parameter {param_name} not found or timeout")
             return None
-            
+
         except Exception as e:
             logging.error(f"Error reading parameter {param_name}: {str(e)}")
             return None
-
 
     def get_drone_status(self):
         """
@@ -959,9 +1034,7 @@ class DroneNode:
             dict: Dictionary containing current drone status values
         """
         if not self.drone:
-            return {
-                'connected': False
-            }
+            return {"connected": False}
 
         # Get current mode if we don't have it
         if not self.flight_mode:
@@ -977,14 +1050,14 @@ class DroneNode:
 
         # Compile status information
         status = {
-            'connected': True,
-            'armed': self.is_armed,
-            'mode': mode_display,
-            'altitude': self.altitude,
+            "connected": True,
+            "armed": self.is_armed,
+            "mode": mode_display,
+            "altitude": self.altitude,
         }
 
         # Add extended status if available
-        if hasattr(self, 'current_status'):
+        if hasattr(self, "current_status"):
             for key, value in self.current_status.items():
                 status[key] = value
 
@@ -1001,20 +1074,19 @@ class DroneNode:
 
 
 if __name__ == "__main__":
-    # drone = DroneNode("udpin:192.168.3.157:14553")
-    drone = DroneNode("udpin:172.21.128.1:14553")
+    drone = DroneNode("udpin:192.168.3.157:14553")
+    # drone = DroneNode("udpin:172.21.128.1:")
 
     try:
         if drone.connect():
-            drone.send_velocity_target(0, 30, 0)
             exit(1)
     except KeyboardInterrupt:
         logging.warning("Tracking interrupted by user (Ctrl+C)")
-    
+
     except Exception as e:
         logging.error(f"Error during tracking: {str(e)}")
-    
-    finally:        
+
+    finally:
         # Cleanup
         drone.cleanup()
         logging.info("Program complete")
