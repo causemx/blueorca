@@ -4,11 +4,77 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLa
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath
 from PyQt5.QtCore import pyqtSignal, QObject
+from enum import Enum
+
+
+class FlightStatus(Enum):
+    """Drone flight readiness status"""
+    READY = "ready"           # Green - Ready to fly
+    WARNING = "warning"       # Yellow - Warning (ready but with caution)
+    NOT_READY = "not_ready"   # Red - Not ready
+
+
+class StatusButton(QWidget):
+    """Status button showing flight readiness"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.status = FlightStatus.NOT_READY
+        self.setMinimumSize(180, 50)
+        self.setMaximumSize(200, 60)
+        self.setCursor(Qt.PointingHandCursor)
+    
+    def set_status(self, status):
+        """Update flight status"""
+        if isinstance(status, FlightStatus):
+            self.status = status
+        self.update()
+    
+    def paintEvent(self, event):
+        """Draw the status button"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        
+        # Determine colors based on status
+        if self.status == FlightStatus.READY:
+            bg_color = QColor(34, 139, 34)      # Green
+            text = "Ready To Fly"
+        elif self.status == FlightStatus.WARNING:
+            bg_color = QColor(184, 134, 11)     # Gold/Yellow
+            text = "Ready To Fly"
+        else:  # NOT_READY
+            bg_color = QColor(220, 20, 60)      # Red
+            text = "Not Ready"
+        
+        # Draw status indicator dot inside icon
+        icon_radius = 12
+        icon_x = 15
+        icon_y = height / 2
+        
+        painter.setBrush(bg_color)
+        painter.drawEllipse(
+            int(icon_x - icon_radius + 4), int(icon_y - icon_radius + 4),
+            icon_radius * 2 - 8, icon_radius * 2 - 8
+        )
+        
+        # Draw text
+        painter.setPen(QPen(bg_color, 1))
+        painter.setFont(QFont("Arial", 10, QFont.Bold))
+        painter.drawText(
+            int(icon_x), 0,
+            int(width - icon_x - 25), height,
+            Qt.AlignCenter | Qt.AlignVCenter,
+            text
+        )
 
 
 class MockData(QObject):
     """Mock data generator for attitude and altitude values"""
     data_updated = pyqtSignal(float, float, float)  # pitch, roll, altitude
+    status_updated = pyqtSignal(FlightStatus)  # flight status
     
     def __init__(self):
         super().__init__()
@@ -18,6 +84,7 @@ class MockData(QObject):
         self.pitch_direction = 1
         self.roll_direction = 1
         self.altitude_direction = 1
+        self.flight_status = FlightStatus.NOT_READY
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(100)  # Update every 100ms
@@ -49,6 +116,21 @@ class MockData(QObject):
         
         # Clamp altitude to reasonable values
         self.altitude = max(0.0, min(self.altitude, 100.0))
+        
+        # Update flight status based on altitude (simulation)
+        # Not ready on ground (altitude < 1m)
+        # Warning when climbing/descending (1m <= altitude < 10m)
+        # Ready when in stable flight (altitude >= 10m)
+        if self.altitude < 1.0:
+            new_status = FlightStatus.NOT_READY
+        elif self.altitude < 10.0:
+            new_status = FlightStatus.WARNING
+        else:
+            new_status = FlightStatus.READY
+        
+        if new_status != self.flight_status:
+            self.flight_status = new_status
+            self.status_updated.emit(self.flight_status)
         
         self.data_updated.emit(self.pitch, self.roll, self.altitude)
 
@@ -334,7 +416,7 @@ class AttitudeIndicator(QWidget):
         # Draw altitude value in center
         painter.setPen(QPen(Qt.green, 2))
         painter.setFont(QFont("Arial", 8))
-        altitude_text = f"{int(self.altitude)}m"
+        altitude_text = f"{int(self.altitude-584)}m"
         painter.drawText(
             int(center_x - 28), int(center_y - 20),
             56, 20,
@@ -365,10 +447,20 @@ class MainWindow(QWidget):
         """Initialize UI components"""
         layout = QVBoxLayout()
         
+        # Title bar with title on left and status button on right
+        title_layout = QHBoxLayout()
+        
         # Title
         title = QLabel("Drone Attitude & Altitude Indicator")
         title.setFont(QFont("Arial", 14, QFont.Bold))
-        layout.addWidget(title)
+        title_layout.addWidget(title)
+        
+        # Status button (right side)
+        self.status_button = StatusButton()
+        title_layout.addStretch()  # Add space to push button to the right
+        title_layout.addWidget(self.status_button)
+        
+        layout.addLayout(title_layout)
         
         # Horizontal layout for attitude indicator and altitude bar
         instruments_layout = QHBoxLayout()
@@ -395,6 +487,7 @@ class MainWindow(QWidget):
         # Connect mock data
         self.mock_data = MockData()
         self.mock_data.data_updated.connect(self.on_data_updated)
+        self.mock_data.status_updated.connect(self.on_status_updated)
     
     def on_data_updated(self, pitch, roll, altitude):
         """Handle mock data updates"""
@@ -403,6 +496,10 @@ class MainWindow(QWidget):
         self.status_label.setText(
             f"Pitch: {pitch:.1f}°  Roll: {roll:.1f}°  Alt: {altitude:.1f}m"
         )
+    
+    def on_status_updated(self, status):
+        """Handle flight status updates"""
+        self.status_button.set_status(status)
 
 
 if __name__ == '__main__':
