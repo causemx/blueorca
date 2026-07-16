@@ -75,6 +75,15 @@ class DroneStatus:
     system_status: str = "UNKNOWN"
     vertical_speed: float = 0.0  # Climb rate in m/s (positive = climbing)
 
+    # EKF Status - Sensor Diagnostics
+    ekf_compass_health: float = 0.0  # Compass/Magnetometer health (0-1)
+    ekf_compass_issues: str = "None"  # Compass issues description
+    ekf_gps_satellites: int = 0  # Number of GPS satellites
+    ekf_gps_hdop: float = 0.0  # Horizontal Dilution of Precision
+    ekf_gps_accuracy: float = 0.0  # GPS accuracy in meters
+    ekf_barometer_alt: float = 0.0  # Barometer altitude reading
+    ekf_status_flags: int = 0  # EKF status flags bitmap
+
     # Message type tracking
     last_message_type: str = ""
     message_types: Dict[str, int] = field(default_factory=dict)
@@ -232,6 +241,12 @@ class MAVLinkServerThread(threading.Thread):
                 self._parse_global_position(status, msg)
             elif msg_type == "VFR_HUD":
                 self._parse_vfr_hud(status, msg)
+            elif msg_type == "EKF_STATUS_REPORT":
+                self._parse_ekf_status(status, msg)
+            elif msg_type == "IMU_RAW_INT":
+                self._parse_imu_raw(status, msg)
+            elif msg_type == "SCALED_IMU":
+                self._parse_scaled_imu(status, msg)
         except Exception:
             pass
 
@@ -294,6 +309,13 @@ class MAVLinkServerThread(threading.Thread):
             status.altitude = msg.alt / 1000.0
             status.gps_fix = msg.fix_type
             status.gps_satellites = msg.satellites_visible
+            
+            # EKF GPS data
+            status.ekf_gps_satellites = msg.satellites_visible
+            if hasattr(msg, 'eph'):
+                status.ekf_gps_hdop = msg.eph / 100.0  # Convert to HDOP
+            if hasattr(msg, 'epv'):
+                status.ekf_gps_accuracy = msg.epv / 100.0  # Vertical accuracy in meters
         except Exception as e:
             print(f"Error parsing GPS: {e}")
 
@@ -315,8 +337,34 @@ class MAVLinkServerThread(threading.Thread):
             status.altitude = msg.alt
             status.heading = msg.heading
             status.vertical_speed = msg.climb
+            
+            # Barometer altitude (pressure-based)
+            status.ekf_barometer_alt = msg.alt
         except Exception as e:
             print(f"Error parsing VFR_HUD: {e}")
+
+    def _parse_ekf_status(self, status, msg):
+        """Parse EKF_STATUS_REPORT message"""
+        try:
+            # Extract EKF status flags
+            status.ekf_status_flags = msg.flags
+            
+            # Extract compass health (0-100%)
+            if hasattr(msg, 'compass_health'):
+                status.ekf_compass_health = msg.compass_health / 100.0
+            
+            # Determine compass issues based on flags
+            compass_flags = msg.flags & 0x0F  # Lower 4 bits for compass
+            if compass_flags == 0:
+                status.ekf_compass_issues = "Healthy"
+            elif compass_flags & 0x01:
+                status.ekf_compass_issues = "Not Aligned"
+            elif compass_flags & 0x02:
+                status.ekf_compass_issues = "Unhealthy"
+            else:
+                status.ekf_compass_issues = "Unknown"
+        except Exception as e:
+            print(f"Error parsing EKF_STATUS: {e}")
 
     @staticmethod
     def _get_system_status_name(status_code):
@@ -715,6 +763,46 @@ class DetailTab(QWidget):
         QTreeWidgetItem(battery_item, ["Current", f"{status.battery_current:.2f}A"])
         QTreeWidgetItem(battery_item, ["Percentage", f"{status.battery_percent}%"])
 
+        # EKF Status - Sensor Diagnostics
+        ekf_item = QTreeWidgetItem(self.tree, ["EKF Status", ""])
+        ekf_font = QFont("Consolas", 10, QFont.Bold)
+        ekf_item.setFont(0, ekf_font)
+        ekf_item.setFont(1, ekf_font)
+
+        # Compass/Magnetometer Health
+        compass_health_item = QTreeWidgetItem(ekf_item, ["Compass/Magnetometer Health", ""])
+        compass_health_pct = status.ekf_compass_health * 100
+        QTreeWidgetItem(
+            compass_health_item, 
+            ["Signal Strength", f"{compass_health_pct:.1f}%"]
+        )
+        QTreeWidgetItem(
+            compass_health_item,
+            ["Status", status.ekf_compass_issues]
+        )
+
+        # GPS Status
+        gps_ekf_item = QTreeWidgetItem(ekf_item, ["GPS Status", ""])
+        QTreeWidgetItem(
+            gps_ekf_item,
+            ["Satellites", str(status.ekf_gps_satellites)]
+        )
+        QTreeWidgetItem(
+            gps_ekf_item,
+            ["HDOP (Horiz. Dil. of Precision)", f"{status.ekf_gps_hdop:.2f}"]
+        )
+        QTreeWidgetItem(
+            gps_ekf_item,
+            ["GPS Accuracy", f"{status.ekf_gps_accuracy:.2f}m"]
+        )
+
+        # Barometer Altitude
+        baro_item = QTreeWidgetItem(ekf_item, ["Barometer Altitude", ""])
+        QTreeWidgetItem(
+            baro_item,
+            ["Pressure-Based Altitude", f"{status.ekf_barometer_alt:.2f}m"]
+        )
+
         # GPS
         gps_item = QTreeWidgetItem(self.tree, ["GPS", ""])
         gps_font = QFont("Consolas", 10, QFont.Bold)
@@ -733,7 +821,7 @@ class DetailTab(QWidget):
         motion_item.setFont(0, motion_font)
         motion_item.setFont(1, motion_font)
 
-        QTreeWidgetItem(motion_item, ["Altitude", f"{status.altitude-584:.2f}m"])
+        QTreeWidgetItem(motion_item, ["Altitude", f"{status.altitude:.2f}m"])
         QTreeWidgetItem(motion_item, ["Ground Speed", f"{status.groundspeed:.2f}m/s"])
         QTreeWidgetItem(motion_item, ["Heading", f"{status.heading:.1f}°"])
 
@@ -743,7 +831,7 @@ class DetailTab(QWidget):
         altitude_item.setFont(0, altitude_font)
         altitude_item.setFont(1, altitude_font)
 
-        QTreeWidgetItem(altitude_item, ["Absolute Altitude", f"{status.altitude-584:.2f}m"])
+        QTreeWidgetItem(altitude_item, ["Absolute Altitude", f"{status.altitude:.2f}m"])
 
         # Altitude status indicator
         altitude_status = "Valid" if status.altitude > 0 else "No Data"

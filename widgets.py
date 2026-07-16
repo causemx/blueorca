@@ -1,9 +1,10 @@
 import sys
 import math
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
-from PyQt5.QtCore import Qt, QTimer, QPoint
+from PyQt5.QtWidgets import QApplication, QFrame, QTextEdit, QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt5.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath
 from PyQt5.QtCore import pyqtSignal, QObject
+from popup_panel import PopupPanel
 from enum import Enum
 
 
@@ -23,12 +24,26 @@ class StatusButton(QWidget):
         self.setMinimumSize(180, 50)
         self.setMaximumSize(200, 60)
         self.setCursor(Qt.PointingHandCursor)
+        
+        # Initialize PopupPanel for status information
+        self.popup_panel = PopupPanel(
+            title="Status Information",
+            text="hello",
+            auto_dismiss_ms=2000,
+            width=300,
+            fade_duration_ms=500
+        )
     
     def set_status(self, status):
         """Update flight status"""
         if isinstance(status, FlightStatus):
             self.status = status
         self.update()
+    
+    def mousePressEvent(self, event):
+        """Handle mouse click to show PopupPanel"""
+        if event.button() == Qt.LeftButton:
+            self.popup_panel.show_relative_to(self)
     
     def paintEvent(self, event):
         """Draw the status button"""
@@ -416,7 +431,7 @@ class AttitudeIndicator(QWidget):
         # Draw altitude value in center
         painter.setPen(QPen(Qt.green, 2))
         painter.setFont(QFont("Arial", 8))
-        altitude_text = f"{int(self.altitude-584)}m"
+        altitude_text = f"{int(self.altitude)}m"
         painter.drawText(
             int(center_x - 28), int(center_y - 20),
             56, 20,
