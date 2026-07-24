@@ -15,14 +15,14 @@ class FlightStatus(Enum):
     NOT_READY = "not_ready"   # Red - Not ready
 
 
-class StatusButton(QWidget):
-    """Status button showing flight readiness"""
+class PreCheckButton(QWidget):
+    """pre-check button showing flight readiness"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.status = FlightStatus.NOT_READY
-        self.setMinimumSize(180, 50)
-        self.setMaximumSize(200, 60)
+        self.setMinimumSize(140, 40)
+        self.setMaximumSize(150, 50)
         self.setCursor(Qt.PointingHandCursor)
         
         # Initialize PopupPanel for status information
@@ -66,7 +66,7 @@ class StatusButton(QWidget):
         
         # Draw status indicator dot inside icon
         icon_radius = 12
-        icon_x = 15
+        icon_x = 10
         icon_y = height / 2
         
         painter.setBrush(bg_color)
@@ -77,7 +77,7 @@ class StatusButton(QWidget):
         
         # Draw text
         painter.setPen(QPen(bg_color, 1))
-        painter.setFont(QFont("Arial", 10, QFont.Bold))
+        painter.setFont(QFont("Arial", 8, QFont.Bold))
         painter.drawText(
             int(icon_x), 0,
             int(width - icon_x - 25), height,
@@ -90,6 +90,8 @@ class MockData(QObject):
     """Mock data generator for attitude and altitude values"""
     data_updated = pyqtSignal(float, float, float)  # pitch, roll, altitude
     status_updated = pyqtSignal(FlightStatus)  # flight status
+    voltage_updated = pyqtSignal(float)  # voltage
+    mode_updated = pyqtSignal(str)  # flight mode
     
     def __init__(self):
         super().__init__()
@@ -100,6 +102,8 @@ class MockData(QObject):
         self.roll_direction = 1
         self.altitude_direction = 1
         self.flight_status = FlightStatus.NOT_READY
+        self.voltage = 12.5  # Starting voltage
+        self.flight_mode = "Stabilize"  # Flight mode
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(100)  # Update every 100ms
@@ -147,7 +151,36 @@ class MockData(QObject):
             self.flight_status = new_status
             self.status_updated.emit(self.flight_status)
         
+        # Simulate voltage fluctuation during flight
+        if self.altitude > 1.0:
+            # Voltage decreases slightly during flight
+            self.voltage -= 0.01
+        else:
+            # Voltage stable on ground
+            self.voltage = 12.5
+        
+        # Keep voltage within realistic range
+        self.voltage = max(9.0, min(self.voltage, 12.6))
+        self.voltage_updated.emit(self.voltage)
+        
+        # Update flight mode based on altitude
+        new_mode = self._get_flight_mode(self.altitude)
+        if new_mode != self.flight_mode:
+            self.flight_mode = new_mode
+            self.mode_updated.emit(self.flight_mode)
+        
         self.data_updated.emit(self.pitch, self.roll, self.altitude)
+    
+    def _get_flight_mode(self, altitude):
+        """Determine flight mode based on altitude"""
+        if altitude < 0.5:
+            return "Stabilize"
+        elif altitude < 5.0:
+            return "AltHold"
+        elif altitude < 50.0:
+            return "Guided"
+        else:
+            return "Auto"
 
 
 class AltitudeBar(QWidget):
@@ -451,6 +484,80 @@ class AttitudeIndicator(QWidget):
         )
 
 
+class SystemInfoPanel(QWidget):
+    """System information panel showing GPS, voltage, and flight mode"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.gps_type = "--"
+        self.voltage = 12.5
+        self.mode = "Stabilize"
+        self.setMinimumSize(280, 40)
+        self.setMaximumSize(350, 50)
+        self.setStyleSheet("background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 3px;")
+    
+    def set_gps_type(self, gps_type):
+        """Update GPS type"""
+        self.gps_type = gps_type
+        self.update()
+    
+    def set_voltage(self, voltage):
+        """Update voltage value"""
+        self.voltage = voltage
+        self.update()
+    
+    def set_mode(self, mode):
+        """Update flight mode"""
+        self.mode = mode
+        self.update()
+    
+    def paintEvent(self, event):
+        """Draw the system info panel"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        
+        # Draw padding
+        padding = 5
+        
+        # Calculate center vertical position for all sections
+        center_y = height / 2
+        text_height = 16
+        section_width = width // 3  # Divide into 3 equal sections
+        
+        # GPS Section (left third)
+        painter.setFont(QFont("Arial", 9))
+        painter.setPen(QPen(Qt.black))
+        painter.drawText(
+            padding, int(center_y - text_height / 2),
+            section_width - padding - 2, text_height,
+            Qt.AlignLeft | Qt.AlignVCenter,
+            f"📡 {self.gps_type}"
+        )
+        
+        # Voltage Section (middle third)
+        painter.setFont(QFont("Arial", 9))
+        painter.setPen(QPen(Qt.black))
+        painter.drawText(
+            section_width, int(center_y - text_height / 2),
+            section_width - 3, text_height,
+            Qt.AlignCenter | Qt.AlignVCenter,
+            f"🔋 {self.voltage:.1f}V"
+        )
+
+        # Mode Section (right third)
+        painter.setFont(QFont("Arial", 9))
+        painter.setPen(QPen(Qt.black))
+        painter.drawText(
+            section_width * 2, int(center_y - text_height / 2),
+            section_width - padding - 2, text_height,
+            Qt.AlignRight | Qt.AlignVCenter,
+            f"🌵 {self.mode}"
+        )
+
+
 class MainWindow(QWidget):
     """Main application window"""
     
@@ -461,26 +568,32 @@ class MainWindow(QWidget):
     def initUI(self):
         """Initialize UI components"""
         layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)  # Compact margins
+        layout.setSpacing(5)  # Reduce spacing between sections
         
-        # Title bar with title on left and status button on right
-        title_layout = QHBoxLayout()
+        # Top bar with precheck button on left and system info on right
+        top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)  # No extra margins
+        top_layout.setSpacing(3)  # Minimal spacing between elements
         
-        # Title
-        title = QLabel("Drone Attitude & Altitude Indicator")
-        title.setFont(QFont("Arial", 14, QFont.Bold))
-        title_layout.addWidget(title)
+        # PreCheck button (left side)
+        self.precheck_button = PreCheckButton()
+        self.precheck_button.setMaximumWidth(150)  # Reduce width
+        top_layout.addWidget(self.precheck_button)
         
-        # Status button (right side)
-        self.status_button = StatusButton()
-        title_layout.addStretch()  # Add space to push button to the right
-        title_layout.addWidget(self.status_button)
+        # System info panel (right side, top-right corner)
+        self.system_info = SystemInfoPanel()
+        top_layout.addStretch()  # Add space to push system info to the right
+        top_layout.addWidget(self.system_info)
         
-        layout.addLayout(title_layout)
+        layout.addLayout(top_layout)
         
-        # Horizontal layout for attitude indicator and altitude bar
+        # Horizontal layout for attitude indicator (main content)
         instruments_layout = QHBoxLayout()
+        instruments_layout.setContentsMargins(0, 0, 0, 0)
+        instruments_layout.setSpacing(5)
         
-        # Attitude indicator widget
+        # Attitude indicator widget (centered)
         self.attitude = AttitudeIndicator()
         instruments_layout.addWidget(self.attitude)
         
@@ -497,12 +610,19 @@ class MainWindow(QWidget):
         
         self.setLayout(layout)
         self.setWindowTitle("Drone Attitude & Altitude Indicator")
-        self.setGeometry(100, 100, 650, 500)
+        self.setGeometry(100, 100, 750, 500)
         
         # Connect mock data
         self.mock_data = MockData()
         self.mock_data.data_updated.connect(self.on_data_updated)
         self.mock_data.status_updated.connect(self.on_status_updated)
+        self.mock_data.voltage_updated.connect(self.update_voltage)
+        self.mock_data.mode_updated.connect(self.update_mode)
+        
+        # Initialize system info with default values
+        self.update_gps_type("RTK")
+        self.update_voltage(12.5)
+        self.update_mode("Stabilize")
     
     def on_data_updated(self, pitch, roll, altitude):
         """Handle mock data updates"""
@@ -514,7 +634,19 @@ class MainWindow(QWidget):
     
     def on_status_updated(self, status):
         """Handle flight status updates"""
-        self.status_button.set_status(status)
+        self.precheck_button.set_status(status)
+    
+    def update_gps_type(self, gps_type):
+        """Update GPS type display"""
+        self.system_info.set_gps_type(gps_type)
+    
+    def update_voltage(self, voltage):
+        """Update voltage display"""
+        self.system_info.set_voltage(voltage)
+    
+    def update_mode(self, mode):
+        """Update flight mode display"""
+        self.system_info.set_mode(mode)
 
 
 if __name__ == '__main__':

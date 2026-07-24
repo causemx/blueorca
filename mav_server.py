@@ -809,8 +809,7 @@ class DetailTab(QWidget):
         gps_item.setFont(0, gps_font)
         gps_item.setFont(1, gps_font)
 
-        # QTreeWidgetItem(gps_item, ["Fix Type", self._get_gps_fix_name(status.gps_fix)])
-        QTreeWidgetItem(gps_item, ["Fix Type", self._get_gps_fix_name(5)])
+        QTreeWidgetItem(gps_item, ["Fix Type", self._get_gps_fix_name(status.gps_fix)])
         QTreeWidgetItem(gps_item, ["Satellites", str(status.gps_satellites)])
         QTreeWidgetItem(gps_item, ["Latitude", f"{status.latitude:.6f}"])
         QTreeWidgetItem(gps_item, ["Longitude", f"{status.longitude:.6f}"])
@@ -886,18 +885,19 @@ class DetailTab(QWidget):
 
     @staticmethod
     def _get_gps_fix_name(fix_type: int) -> str:
-        """Convert GPS fix type to readable name"""
+        """Convert GPS fix type to readable name - MAVLink Common Message Set"""
         gps_fix_names = {
             0: "No GPS",
             1: "No Fix",
             2: "2D Fix",
             3: "3D Fix",
             4: "DGPS Fix",
-            5: "RTK Fixed",
+            5: "RTK Float",
+            6: "RTK Fixed",
+            7: "Static Fixed",
+            8: "PPP",
         }
         return gps_fix_names.get(fix_type, f"Unknown ({fix_type})")
-
-
 
 
 class MAVLinkDashboard(QMainWindow):
