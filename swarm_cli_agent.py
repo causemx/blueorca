@@ -6,7 +6,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import dict, list
 
 from control import DroneNode, FlightMode
 
@@ -35,7 +35,7 @@ class DroneConfig:
 class SwarmController:
     """Controls a swarm of drones with synchronized commands"""
 
-    def __init__(self, drone_configs: List[DroneConfig]):
+    def __init__(self, drone_configs: list[DroneConfig]):
         """
         Initialize swarm controller
 
@@ -43,7 +43,7 @@ class SwarmController:
             drone_configs: List of DroneConfig objects for each drone
         """
         self.drone_configs = drone_configs
-        self.drones: Dict[int, DroneNode] = {}
+        self.drones: dict[int, DroneNode] = {}
         self.lock = threading.Lock()
         self.is_swarm_armed = False
 
@@ -281,6 +281,87 @@ class SwarmController:
             else:
                 return False
 
+    def line_formation(self, spacing: float = 5.0, altitude: float = None) -> bool:
+        """
+        Arrange all drones into a line formation, side by side, perpendicular
+        to the lead drone's current heading.
+
+        Args:
+            spacing: Distance in meters between adjacent drones in the line
+            altitude: Target altitude in meters (maintains current if None)
+
+        Returns:
+            True if the command was sent to at least one drone
+        """
+        if not self.drones:
+            logger.error("No drones connected")
+            return False
+
+        drone_ids = sorted(self.drones.keys())
+        lead_drone = self.drones[drone_ids[0]]
+        lead_status = lead_drone.get_drone_status()
+        lead_position = lead_status.get("position")
+        lead_heading = lead_status.get("heading")
+        lead_altitude = lead_status.get("altitude", 0)
+
+        if lead_position is None or lead_heading is None:
+            logger.error(
+                f"Cannot get position/heading from lead drone {drone_ids[0]}"
+            )
+            return False
+
+        lead_lat, lead_lon = lead_position
+        target_altitude = altitude if altitude is not None else lead_altitude
+
+        # Line runs perpendicular to the lead drone's heading
+        line_heading_rad = math.radians(lead_heading + 90.0)
+
+        n = len(drone_ids)
+        logger.info(
+            f"Arranging {n} drone(s) into line formation with {spacing}m spacing..."
+        )
+
+        with self.lock:
+            success_count = 0
+            for index, drone_id in enumerate(drone_ids):
+                drone = self.drones[drone_id]
+                try:
+                    # Center the line on the lead drone's position
+                    offset_distance = (index - (n - 1) / 2.0) * spacing
+
+                    lat_offset = (offset_distance / 111000.0) * math.cos(
+                        line_heading_rad
+                    )
+                    lon_offset = (
+                        offset_distance
+                        / (111000.0 * math.cos(math.radians(lead_lat)))
+                    ) * math.sin(line_heading_rad)
+
+                    target_lat = lead_lat + lat_offset
+                    target_lon = lead_lon + lon_offset
+
+                    if drone.fly_to_target(target_lat, target_lon, target_altitude):
+                        logger.info(
+                            f"[OK] Drone {drone_id}: moving to line slot {index} "
+                            f"({target_lat:.7f}, {target_lon:.7f}) at {target_altitude}m"
+                        )
+                        success_count += 1
+                    else:
+                        logger.warning(
+                            f"[FAIL] Drone {drone_id}: fly_to_target command failed"
+                        )
+
+                except Exception as e:
+                    logger.error(f"[ERROR] Drone {drone_id}: {str(e)}")
+
+            if success_count > 0:
+                logger.info(
+                    f"Line formation command sent to {success_count}/{n} drone(s)"
+                )
+                return True
+            else:
+                return False
+
     def mode_all(self, flight_mode: FlightMode) -> bool:
         """
         Set flight mode for all drones
@@ -454,6 +535,44 @@ class SwarmCLI(cmd.Cmd):
         except ValueError:
             print(f"[ERROR] Invalid arguments: {arg}")
             print("Usage: move <distance> [altitude]")
+
+    def do_line(self, arg):
+        """
+        Switch all drones to line formation
+
+        Usage:
+            line [spacing] [altitude]
+
+        Args:
+            spacing: Distance in meters between adjacent drones (default: 5.0)
+            altitude: Target altitude in meters - maintains current if omitted
+
+        Examples:
+            line          - Line up with 5m spacing at current altitude
+            line 8        - Line up with 8m spacing at current altitude
+            line 8 10     - Line up with 8m spacing at 10m altitude
+        """
+        args = arg.strip().split()
+
+        try:
+            spacing = float(args[0]) if len(args) > 0 else 5.0
+            altitude = float(args[1]) if len(args) > 1 else None
+
+            if spacing <= 0 or spacing > 100:
+                print("[ERROR] Spacing must be between 0 and 100 meters")
+                return
+
+            if altitude is not None and (altitude < 0.5 or altitude > 100):
+                print("[ERROR] Altitude must be between 0.5 and 100 meters")
+                return
+
+            if self.swarm.line_formation(spacing, altitude):
+                print(f"[SUCCESS] All drones switching to line formation ({spacing}m spacing)")
+            else:
+                print("[ERROR] Line formation command failed")
+        except ValueError:
+            print(f"[ERROR] Invalid arguments: {arg}")
+            print("Usage: line [spacing] [altitude]")
 
     def do_mode(self, arg):
         """
@@ -680,6 +799,10 @@ class SwarmCLI(cmd.Cmd):
                 (
                     "move <dist> [alt]",
                     "Move forward/back by distance (use fly_to_target)",
+                ),
+                (
+                    "line [spacing] [alt]",
+                    "Switch all drones to line formation",
                 ),
                 (
                     "mode <mode_name>",
