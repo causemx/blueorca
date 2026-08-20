@@ -850,9 +850,9 @@ def main():
     # Configure drone list
     # UPDATE THESE IPs TO MATCH YOUR DRONES
     drone_configs = [
-        DroneConfig(drone_id=1, ip_address="192.168.3.157", port=14553),
-        # DroneConfig(drone_id=2, ip_address='192.168.3.200', port=14653),
-        # DroneConfig(drone_id=1, ip_address="172.21.128.1", port=14553),
+        DroneConfig(drone_id=2, ip_address='192.168.3.200', port=14563),
+        DroneConfig(drone_id=3, ip_address="192.168.3.200", port=14583),
+        DroneConfig(drone_id=4, ip_address="192.168.3.200", port=14593),
         # DroneConfig(drone_id=2, ip_address="172.21.128.1", port=14563),
         # DroneConfig(drone_id=3, ip_address="172.21.128.1", port=14573),
     ]

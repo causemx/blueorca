@@ -27,10 +27,12 @@ class PreCheckButton(QWidget):
         
         # Initialize PopupPanel for status information
         self.popup_panel = PopupPanel(
-            title="Status Information",
-            text="hello",
+            title="EKF Info",
+            text="HDOP: __, \n" \
+            "COMPASS: __\n " \
+            "SATELLITE: __",
             auto_dismiss_ms=2000,
-            width=300,
+            width=200,
             fade_duration_ms=500
         )
     
@@ -66,7 +68,7 @@ class PreCheckButton(QWidget):
         
         # Draw status indicator dot inside icon
         icon_radius = 12
-        icon_x = 10
+        icon_x = 15
         icon_y = height / 2
         
         painter.setBrush(bg_color)
@@ -489,7 +491,7 @@ class SystemInfoPanel(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.gps_type = "--"
+        self.gps_type = "rtk-fixed"
         self.voltage = 12.5
         self.mode = "Stabilize"
         self.setMinimumSize(280, 40)
@@ -528,7 +530,7 @@ class SystemInfoPanel(QWidget):
         section_width = width // 3  # Divide into 3 equal sections
         
         # GPS Section (left third)
-        painter.setFont(QFont("Arial", 9))
+        painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.black))
         painter.drawText(
             padding, int(center_y - text_height / 2),
@@ -538,7 +540,7 @@ class SystemInfoPanel(QWidget):
         )
         
         # Voltage Section (middle third)
-        painter.setFont(QFont("Arial", 9))
+        painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.black))
         painter.drawText(
             section_width, int(center_y - text_height / 2),
@@ -548,13 +550,13 @@ class SystemInfoPanel(QWidget):
         )
 
         # Mode Section (right third)
-        painter.setFont(QFont("Arial", 9))
+        painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.black))
         painter.drawText(
             section_width * 2, int(center_y - text_height / 2),
             section_width - padding - 2, text_height,
             Qt.AlignRight | Qt.AlignVCenter,
-            f"🌵 {self.mode}"
+            f"✈️ {self.mode}"
         )
 
 
@@ -647,6 +649,10 @@ class MainWindow(QWidget):
     def update_mode(self, mode):
         """Update flight mode display"""
         self.system_info.set_mode(mode)
+
+
+# Backward compatibility alias
+StatusButton = PreCheckButton
 
 
 if __name__ == '__main__':

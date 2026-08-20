@@ -9,37 +9,35 @@ import socket
 import sys
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict
 
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
-from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt5.QtCore import QObject, Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QPainter
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
-    QPushButton,
     QScrollArea,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-# Import the AttitudeIndicator and StatusButton widgets
-from widgets import AttitudeIndicator, StatusButton, FlightStatus
+# Import widgets - AttitudeIndicator, PreCheckButton, SystemInfoPanel, FlightStatus
+from widgets import (
+    AttitudeIndicator,
+    PreCheckButton,
+    SystemInfoPanel,
+    FlightStatus,
+)
 
 
 @dataclass
@@ -157,14 +155,11 @@ class MAVLinkServerThread(threading.Thread):
 
                 if msg:
                     # ===== NEW: GET HIGH-RESOLUTION TIMESTAMPS =====
-                    capture_time_ns = int(time.time_ns())
-                    capture_time_us = int(time.time() * 1e6)
 
                     # Extract message metadata
                     sysid = msg.get_srcSystem()
                     compid = msg.get_srcComponent()
                     msg_type = msg.get_type()
-                    msg_id = msg.get_msgId()
 
                     # ===== FIX: FILTER OUT BROADCAST/INVALID SYSID =====
                     # SYSID 255 is reserved for broadcast messages (GCS, network broadcasts)
@@ -173,11 +168,6 @@ class MAVLinkServerThread(threading.Thread):
                     if sysid == 255 or sysid == 0:
                         continue  # Ignore this packet
                     # =====================================================
-
-                    # Extract sequence number (if available)
-                    msg_seq = 0
-                    if hasattr(msg, "seq"):
-                        msg_seq = msg.seq
 
                     # Check if this is a new drone (by sysid, not addr)
                     if sysid not in self.drones:
@@ -208,7 +198,7 @@ class MAVLinkServerThread(threading.Thread):
         self.signal_emitter.drone_connected.emit(sysid, compid, addr[1])
         self.signal_emitter.drone_message_received.emit(sysid, status)
         print(
-            f"✓ DRONE CONNECTED: {addr[0]}:{addr[1]} (SysID: {sysid}, First Msg: {first_msg_type})"
+            f"DRONE CONNECTED: {addr[0]}:{addr[1]} (SysID: {sysid}, First Msg: {first_msg_type})"
         )
 
     def _update_drone_status(self, sysid, addr, msg, msg_type):
@@ -449,6 +439,21 @@ class DroneCard(QFrame):
         
         # Armed but on ground
         return FlightStatus.WARNING
+    
+    def _get_gps_type_name(self, fix_type: int) -> str:
+        """Convert GPS fix type to short readable name"""
+        gps_fix_names = {
+            0: "No GPS",
+            1: "No Fix",
+            2: "2D",
+            3: "3D",
+            4: "DGPS",
+            5: "RTK Float",
+            6: "RTK",
+            7: "Static",
+            8: "PPP",
+        }
+        return gps_fix_names.get(fix_type, "Unknown")
 
     def init_ui(self):
         """Initialize UI"""
@@ -473,28 +478,6 @@ class DroneCard(QFrame):
         )
         info_layout.addWidget(drone_label)
 
-        # Connection status
-        self.status_label = QLabel("● Connecting...")
-        status_font = QFont("Consolas", 7)
-        self.status_label.setFont(status_font)
-        self.status_label.setStyleSheet("background: transparent; border: none;")
-        info_layout.addWidget(self.status_label)
-
-        # Address
-        addr_text = (
-            f"{self.status.addr[0]}:{self.status.addr[1]}"
-            if self.status.addr
-            else "N/A"
-        )
-        self.addr_label = QLabel(addr_text)
-        addr_font = QFont("Consolas", 7)
-        addr_font.setItalic(True)
-        self.addr_label.setFont(addr_font)
-        self.addr_label.setStyleSheet(
-            "color: #888888; background: transparent; border: none;"
-        )
-        info_layout.addWidget(self.addr_label)
-
         # Messages and Uptime in horizontal layout
         stats_layout = QHBoxLayout()
         stats_layout.setSpacing(10)
@@ -502,12 +485,16 @@ class DroneCard(QFrame):
         info_layout.addLayout(stats_layout)
         top_layout.addLayout(info_layout)
 
-        # Right side - Status button
-        self.status_button = StatusButton()
+        # Right side - Pre-check button for flight readiness
+        self.precheck_button = PreCheckButton()
         top_layout.addStretch()
-        top_layout.addWidget(self.status_button)
+        top_layout.addWidget(self.precheck_button)
 
         main_layout.addLayout(top_layout)
+
+        # System Info Panel - GPS, Voltage, and Flight Mode
+        self.system_info = SystemInfoPanel()
+        main_layout.addWidget(self.system_info)
 
         # Middle section - Attitude Indicator only
         self.attitude_indicator = AttitudeIndicator(parent=self)
@@ -545,21 +532,6 @@ class DroneCard(QFrame):
         """Update drone status display"""
         self.status = status
 
-        if status.connected:
-            self.status_label.setText("● Connected")
-            self.status_label.setStyleSheet(
-                "color: #00CC00; background: transparent; border: none;"
-            )
-        else:
-            self.status_label.setText("● Disconnected")
-            self.status_label.setStyleSheet(
-                "color: #FF6666; background: transparent; border: none;"
-            )
-
-        # Update address if it changed (drone reconnected on different port)
-        if status.addr:
-            addr_text = f"{status.addr[0]}:{status.addr[1]}"
-            self.addr_label.setText(addr_text)
 
         # Update attitude indicator with telemetry data
         self.roll_label.setText(f"Roll: {status.roll:.1f}°")
@@ -571,7 +543,18 @@ class DroneCard(QFrame):
         
         # Update flight status button
         flight_status = self.get_flight_status(status)
-        self.status_button.set_status(flight_status)
+        self.precheck_button.set_status(flight_status)
+        
+        # Update system info panel (GPS, Voltage, Mode)
+        # GPS Type based on GPS fix status
+        gps_fix_type = self._get_gps_type_name(status.gps_fix)
+        self.system_info.set_gps_type(gps_fix_type)
+        
+        # Battery voltage
+        self.system_info.set_voltage(status.battery_voltage)
+        
+        # Flight mode
+        self.system_info.set_mode(status.mode)
 
     def set_selected(self, selected: bool):
         """Set selection state"""
