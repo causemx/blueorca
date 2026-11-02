@@ -304,9 +304,16 @@ class AttitudeIndicator(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # Get widget dimensions
-        width = self.width()
-        height = self.height()
+        # Draw in a fixed 200x200 design space, scaled to fit the widget
+        design_size = 200
+        scale = min(self.width(), self.height()) / design_size
+        painter.translate(
+            (self.width() - design_size * scale) / 2,
+            (self.height() - design_size * scale) / 2,
+        )
+        painter.scale(scale, scale)
+
+        width = height = design_size
         center_x = width / 2
         center_y = height / 2
         radius = min(width, height) / 2 - 20
@@ -323,7 +330,9 @@ class AttitudeIndicator(QWidget):
         # Save painter state
         painter.save()
         
-        # Translate to center and apply rotation
+        # Translate to center and apply rotation. The horizon tilts the same
+        # way as the drone (right roll = clockwise), matching what an observer
+        # holding the drone expects. Qt's rotate() is clockwise-positive.
         painter.translate(center_x, center_y)
         painter.rotate(self.roll)
         
@@ -336,8 +345,9 @@ class AttitudeIndicator(QWidget):
         sky_color = QColor(100, 150, 255)  # Light blue
         ground_color = QColor(139, 100, 50)  # Brown
         
-        # Calculate pitch offset (vertical movement)
-        pitch_offset = (self.pitch / 90.0) * radius
+        # Calculate pitch offset (vertical movement); nose up moves horizon down
+        pitch = max(-90.0, min(90.0, self.pitch))
+        pitch_offset = (pitch / 90.0) * radius
         
         # Draw sky half - fill from top to pitch_offset line
         painter.fillRect(
@@ -356,7 +366,9 @@ class AttitudeIndicator(QWidget):
         
         # Draw horizon line
         painter.setPen(QPen(Qt.white, 2))
-        painter.drawLine(int(-radius), 0, int(radius), 0)
+        painter.drawLine(
+            int(-radius), int(pitch_offset), int(radius), int(pitch_offset)
+        )
         
         # Draw pitch lines and numbers
         painter.setPen(QPen(Qt.white, 1))
@@ -365,7 +377,7 @@ class AttitudeIndicator(QWidget):
         for pitch_val in range(-90, 91, 10):
             if pitch_val % 10 == 0 and pitch_val != 0:
                 line_length = 30 if pitch_val % 20 == 0 else 15
-                y_pos = -(pitch_val / 90.0) * radius
+                y_pos = pitch_offset - (pitch_val / 90.0) * radius
                 
                 painter.drawLine(
                     int(-line_length), int(y_pos),

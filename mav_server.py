@@ -5,6 +5,7 @@ Uses sysid as unique identifier to prevent duplicate drone cards
 SYSID 255 (broadcast) filtering enabled
 """
 
+import math
 import socket
 import sys
 import threading
@@ -62,14 +63,15 @@ class DroneStatus:
     battery_current: float = 0.0
     gps_fix: int = 0
     gps_satellites: int = 0
-    altitude: float = 0.0
+    altitude: float = 0.0  # Relative altitude above home (m)
+    absolute_altitude: float = 0.0  # MSL altitude (m)
     latitude: float = 0.0
     longitude: float = 0.0
     groundspeed: float = 0.0
     heading: float = 0.0
-    roll: float = 0.0
-    pitch: float = 0.0
-    yaw: float = 0.0
+    roll: float = 0.0  # degrees
+    pitch: float = 0.0  # degrees
+    yaw: float = 0.0  # degrees, 0-360
     system_status: str = "UNKNOWN"
     vertical_speed: float = 0.0  # Climb rate in m/s (positive = climbing)
 
@@ -169,9 +171,13 @@ class MAVLinkServerThread(threading.Thread):
                         continue  # Ignore this packet
                     # =====================================================
 
-                    # Check if this is a new drone (by sysid, not addr)
+                    # Check if this is a new drone (by sysid, not addr).
+                    # Only a vehicle autopilot HEARTBEAT registers a drone;
+                    # anything else from an unknown sysid is ignored.
                     if sysid not in self.drones:
-                        self._drone_connected(sysid, compid, addr, msg_type)
+                        if msg_type == "HEARTBEAT" and self._is_vehicle_heartbeat(msg):
+                            self._drone_connected(sysid, compid, addr, msg_type)
+                            self._update_drone_status(sysid, addr, msg, msg_type)
                     else:
                         # Update existing drone
                         self._update_drone_status(sysid, addr, msg, msg_type)
@@ -179,6 +185,36 @@ class MAVLinkServerThread(threading.Thread):
         except Exception:
             # Silently ignore parsing errors
             pass
+
+    # MAV_TYPEs that are not vehicles (GCS, peripherals, onboard computers)
+    NON_VEHICLE_TYPES = {
+        getattr(mavlink, name)
+        for name in (
+            "MAV_TYPE_GCS",
+            "MAV_TYPE_GIMBAL",
+            "MAV_TYPE_CAMERA",
+            "MAV_TYPE_ONBOARD_CONTROLLER",
+            "MAV_TYPE_ADSB",
+            "MAV_TYPE_ANTENNA_TRACKER",
+            "MAV_TYPE_FLARM",
+            "MAV_TYPE_SERVO",
+            "MAV_TYPE_ODID",
+            "MAV_TYPE_BATTERY",
+            "MAV_TYPE_CHARGING_STATION",
+            "MAV_TYPE_IMU",
+            "MAV_TYPE_GPS",
+            "MAV_TYPE_WINCH",
+        )
+        if hasattr(mavlink, name)
+    }
+
+    @classmethod
+    def _is_vehicle_heartbeat(cls, msg) -> bool:
+        """True if a HEARTBEAT comes from a vehicle autopilot"""
+        return (
+            msg.autopilot != mavlink.MAV_AUTOPILOT_INVALID
+            and msg.type not in cls.NON_VEHICLE_TYPES
+        )
 
     def _drone_connected(self, sysid, compid, addr, first_msg_type):
         """Handle new drone connection"""
@@ -206,7 +242,14 @@ class MAVLinkServerThread(threading.Thread):
         status = self.drones[sysid]
         status.addr = addr  # Update address in case it changed (new port)
         status.message_count += 1
-        status.last_heartbeat = time.time()
+
+        # Only the registered autopilot's HEARTBEAT counts as liveness and
+        # sets mode/armed; other components of this sysid can't override it
+        from_autopilot = msg.get_srcComponent() == status.compid
+        if msg_type == "HEARTBEAT" and not from_autopilot:
+            return
+        if msg_type == "HEARTBEAT":
+            status.last_heartbeat = time.time()
         status.last_update = datetime.now().strftime("%H:%M:%S")
         status.last_message_type = msg_type
 
@@ -285,9 +328,10 @@ class MAVLinkServerThread(threading.Thread):
     def _parse_attitude(self, status, msg):
         """Parse ATTITUDE message"""
         try:
-            status.roll = msg.roll
-            status.pitch = msg.pitch
-            status.yaw = msg.yaw
+            # MAVLink ATTITUDE is in radians; store degrees
+            status.roll = math.degrees(msg.roll)
+            status.pitch = math.degrees(msg.pitch)
+            status.yaw = math.degrees(msg.yaw) % 360.0
         except Exception:
             pass
 
@@ -296,7 +340,6 @@ class MAVLinkServerThread(threading.Thread):
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            status.altitude = msg.alt / 1000.0
             status.gps_fix = msg.fix_type
             status.gps_satellites = msg.satellites_visible
             
@@ -314,7 +357,8 @@ class MAVLinkServerThread(threading.Thread):
         try:
             status.latitude = msg.lat / 1e7
             status.longitude = msg.lon / 1e7
-            status.altitude = msg.alt / 1000.0
+            status.absolute_altitude = msg.alt / 1000.0
+            status.altitude = msg.relative_alt / 1000.0  # relative to home
             status.groundspeed = (msg.vx**2 + msg.vy**2) ** 0.5 / 100.0
             status.heading = msg.hdg / 100.0
         except Exception as e:
@@ -324,7 +368,6 @@ class MAVLinkServerThread(threading.Thread):
         """Parse VFR_HUD message"""
         try:
             status.groundspeed = msg.groundspeed
-            status.altitude = msg.alt
             status.heading = msg.heading
             status.vertical_speed = msg.climb
             
@@ -421,24 +464,8 @@ class DroneCard(QFrame):
 
     def get_flight_status(self, status: DroneStatus) -> FlightStatus:
         """Determine flight status based on drone telemetry"""
-        # Not connected
-        if not status.connected:
-            return FlightStatus.NOT_READY
-        
-        # Not armed
-        if not status.armed:
-            return FlightStatus.NOT_READY
-        
-        # Armed but no GPS fix
-        if status.gps_fix < 3:  # Less than 3D fix
-            return FlightStatus.WARNING
-        
-        # Armed and in flight (altitude > 1m)
-        if status.altitude > 1.0:
-            return FlightStatus.READY
-        
-        # Armed but on ground
-        return FlightStatus.WARNING
+        # Always report ready (connection/arm/GPS/altitude checks disabled)
+        return FlightStatus.READY
     
     def _get_gps_type_name(self, fix_type: int) -> str:
         """Convert GPS fix type to short readable name"""
@@ -457,76 +484,62 @@ class DroneCard(QFrame):
 
     def init_ui(self):
         """Initialize UI"""
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(4)
+        # Compact horizontal card: attitude indicator | info column
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(8)
 
-        # Top section - Info with status button
+        # Left side - Attitude Indicator
+        self.attitude_indicator = AttitudeIndicator(parent=self)
+        self.attitude_indicator.setMinimumSize(0, 0)
+        self.attitude_indicator.setFixedSize(140, 140)
+        main_layout.addWidget(self.attitude_indicator)
+
+        # Right side - info column
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(2)
+
+        # Top row - Drone ID and pre-check button
         top_layout = QHBoxLayout()
         top_layout.setSpacing(10)
 
-        # Left side - Info
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(4)
-
-        # Drone ID
         drone_label = QLabel(f"Drone #{self.status.sysid}")
         drone_font = QFont("Consolas", 9, QFont.Bold)
         drone_label.setFont(drone_font)
         drone_label.setStyleSheet(
             "color: #888888; background: transparent; border: none;"
         )
-        info_layout.addWidget(drone_label)
-
-        # Messages and Uptime in horizontal layout
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(10)
-
-        info_layout.addLayout(stats_layout)
-        top_layout.addLayout(info_layout)
-
-        # Right side - Pre-check button for flight readiness
-        self.precheck_button = PreCheckButton()
+        top_layout.addWidget(drone_label)
         top_layout.addStretch()
-        top_layout.addWidget(self.precheck_button)
 
-        main_layout.addLayout(top_layout)
+        self.precheck_button = PreCheckButton()
+        top_layout.addWidget(self.precheck_button)
+        info_layout.addLayout(top_layout)
 
         # System Info Panel - GPS, Voltage, and Flight Mode
         self.system_info = SystemInfoPanel()
-        main_layout.addWidget(self.system_info)
+        info_layout.addWidget(self.system_info)
 
-        # Middle section - Attitude Indicator only
-        self.attitude_indicator = AttitudeIndicator(parent=self)
-        main_layout.addWidget(self.attitude_indicator)
+        # Attitude values in one row
+        attitude_layout = QHBoxLayout()
+        attitude_layout.setSpacing(10)
 
-        # Bottom section - Attitude values
-        attitude_layout = QVBoxLayout()
-        attitude_layout.setSpacing(2)
-
+        label_font = QFont("Consolas", 8)
         self.roll_label = QLabel(f"Roll: {self.status.roll:.1f}°")
-        roll_font = QFont("Consolas", 6)
-        self.roll_label.setFont(roll_font)
-        self.roll_label.setStyleSheet("background: transparent; border: none;")
-        attitude_layout.addWidget(self.roll_label)
-
         self.pitch_label = QLabel(f"Pitch: {self.status.pitch:.1f}°")
-        pitch_font = QFont("Consolas", 6)
-        self.pitch_label.setFont(pitch_font)
-        self.pitch_label.setStyleSheet("background: transparent; border: none;")
-        attitude_layout.addWidget(self.pitch_label)
-
         self.yaw_label = QLabel(f"Yaw: {self.status.yaw:.1f}°")
-        yaw_font = QFont("Consolas", 6)
-        self.yaw_label.setFont(yaw_font)
-        self.yaw_label.setStyleSheet("background: transparent; border: none;")
-        attitude_layout.addWidget(self.yaw_label)
+        for label in (self.roll_label, self.pitch_label, self.yaw_label):
+            label.setFont(label_font)
+            label.setStyleSheet("background: transparent; border: none;")
+            attitude_layout.addWidget(label)
+        attitude_layout.addStretch()
 
-        main_layout.addLayout(attitude_layout)
+        info_layout.addLayout(attitude_layout)
+        main_layout.addLayout(info_layout, 1)
 
         self.setLayout(main_layout)
-        self.setMinimumHeight(280)
-        self.setMinimumWidth(350)
+        self.setFixedHeight(160)  # 5 cards + spacing fit in ~850px, no scrolling
+        self.setMinimumWidth(460)
 
     def update_status(self, status: DroneStatus):
         """Update drone status display"""
@@ -612,10 +625,10 @@ class OverviewTab(QWidget):
 
         # Container for drone cards
         container = QWidget()
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(10)
-        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        container.setLayout(self.grid_layout)
+        self.cards_layout = QVBoxLayout()
+        self.cards_layout.setSpacing(10)
+        self.cards_layout.setAlignment(Qt.AlignTop)
+        container.setLayout(self.cards_layout)
 
         scroll_area.setWidget(container)
         layout.addWidget(scroll_area)
@@ -628,12 +641,7 @@ class OverviewTab(QWidget):
         card.clicked.connect(self.on_drone_card_clicked)
         self.drone_cards[sysid] = card
 
-        # Calculate grid position (2 columns)
-        row = len(self.drone_cards) - 1
-        grid_row = row // 2
-        grid_col = row % 2
-
-        self.grid_layout.addWidget(card, grid_row, grid_col)
+        self.cards_layout.addWidget(card)
 
     def remove_drone(self, sysid: int):
         """Remove a drone card from the overview"""
@@ -695,6 +703,13 @@ class DetailTab(QWidget):
         """Set the selected drone and display its details"""
         self.current_drone = sysid
         self.display_drone_details(sysid, status)
+
+    def clear_drone(self):
+        """Clear the view when the selected drone goes away"""
+        self.current_drone = None
+        self.title_label.setText("Drone Details")
+        self.subtitle_label.setText("Select a drone from the overview to view details")
+        self.tree.clear()
 
     def display_drone_details(self, sysid: int, status: DroneStatus):
         """Display detailed information for a drone"""
@@ -813,7 +828,7 @@ class DetailTab(QWidget):
         altitude_item.setFont(0, altitude_font)
         altitude_item.setFont(1, altitude_font)
 
-        QTreeWidgetItem(altitude_item, ["Absolute Altitude", f"{status.altitude:.2f}m"])
+        QTreeWidgetItem(altitude_item, ["Relative Altitude", f"{status.altitude:.2f}m"])
 
         # Altitude status indicator
         altitude_status = "Valid" if status.altitude > 0 else "No Data"
@@ -837,7 +852,11 @@ class DetailTab(QWidget):
         )
 
         # Altitude source
-        QTreeWidgetItem(altitude_item, ["Altitude Source", "Barometer"])
+        QTreeWidgetItem(
+            altitude_item,
+            ["Absolute Altitude (MSL)", f"{status.absolute_altitude:.2f}m"],
+        )
+        QTreeWidgetItem(altitude_item, ["Altitude Source", "EKF (relative to home)"])
 
         # Speed Information
         speed_item = QTreeWidgetItem(self.tree, ["Speed Information", ""])
@@ -970,15 +989,13 @@ class MAVLinkDashboard(QMainWindow):
     def on_drone_disconnected(self, sysid: int):
         """Handle drone disconnection"""
         if sysid in self.drone_statuses:
-            status = self.drone_statuses[sysid]
-            status.connected = False
-            status.connection_event = "DISCONNECTED"
-            status.last_update = datetime.now().strftime("%H:%M:%S")
-
-            self.overview_tab.update_drone_status(sysid, status)
+            # Drop the card so only live drones are shown; on_drone_connected
+            # adds it back if the drone returns
+            self.drone_statuses.pop(sysid)
+            self.overview_tab.remove_drone(sysid)
 
             if self.detail_tab.current_drone == sysid:
-                self.detail_tab.display_drone_details(sysid, status)
+                self.detail_tab.clear_drone()
 
             print(f"✗ DRONE DISCONNECTED: SysID {sysid}")
 

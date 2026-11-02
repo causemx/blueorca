@@ -6,7 +6,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import dict, list
+from typing import Dict, List
 
 from control import DroneNode, FlightMode
 
@@ -35,7 +35,7 @@ class DroneConfig:
 class SwarmController:
     """Controls a swarm of drones with synchronized commands"""
 
-    def __init__(self, drone_configs: list[DroneConfig]):
+    def __init__(self, drone_configs: List[DroneConfig]):
         """
         Initialize swarm controller
 
@@ -43,7 +43,7 @@ class SwarmController:
             drone_configs: List of DroneConfig objects for each drone
         """
         self.drone_configs = drone_configs
-        self.drones: dict[int, DroneNode] = {}
+        self.drones: Dict[int, DroneNode] = {}
         self.lock = threading.Lock()
         self.is_swarm_armed = False
 
@@ -731,7 +731,7 @@ class SwarmCLI(cmd.Cmd):
                 # Extract battery information
                 battery_info = status.get("battery")
                 if battery_info:
-                    if isinstance(battery_info, dict):
+                    if isinstance(battery_info, Dict):
                         battery_voltage = battery_info.get("voltage", "N/A")
                         battery_str = f"{int(battery_voltage) / 1000:.2f}"
                 else:
@@ -745,13 +745,15 @@ class SwarmCLI(cmd.Cmd):
 
                     # Map fix type numbers to names
                     fix_type_names = {
-                        0: "No Fix",
-                        1: "Dead Reck",
+                        0: "No GPS",
+                        1: "No Fix",
                         2: "2D Fix",
                         3: "3D Fix",
                         4: "DGPS Fix",
                         5: "RTK Float",
                         6: "RTK Fixed",
+                        7: "Static",
+                        8: "PPP",
                     }
                     if isinstance(fix_type, int):
                         fix_type_str = fix_type_names.get(
@@ -773,7 +775,7 @@ class SwarmCLI(cmd.Cmd):
                     f"{drone_id:>4} {armed:>7} {mode:>12} {heading_str:>10} {altitude_str:>8} {battery_str:>12} {satellites_str:>10} {fix_type_str:>12} {wpnav_speed_str:>12} {'':>7}🥴"
                 )
 
-            # print("\nFix Types: No Fix=0, Dead Reck=1, 2D=2, 3D=3, DGPS=4, RTK Float=5, RTK Fixed=6\n")
+            # print("\nFix Types: No GPS=0, No Fix=1, 2D=2, 3D=3, DGPS=4, RTK Float=5, RTK Fixed=6\n")
 
         except Exception as e:
             logger.error(f"Error getting drone status: {str(e)}")
@@ -850,9 +852,10 @@ def main():
     # Configure drone list
     # UPDATE THESE IPs TO MATCH YOUR DRONES
     drone_configs = [
+        # DroneConfig(drone_id=1, ip_address='192.168.3.200', port=14553),
         DroneConfig(drone_id=2, ip_address='192.168.3.200', port=14563),
-        DroneConfig(drone_id=3, ip_address="192.168.3.200", port=14583),
-        DroneConfig(drone_id=4, ip_address="192.168.3.200", port=14593),
+        DroneConfig(drone_id=3, ip_address="192.168.3.200", port=14573),
+        DroneConfig(drone_id=5, ip_address="192.168.3.200", port=14593),
         # DroneConfig(drone_id=2, ip_address="172.21.128.1", port=14563),
         # DroneConfig(drone_id=3, ip_address="172.21.128.1", port=14573),
     ]
